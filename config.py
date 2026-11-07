@@ -11,6 +11,10 @@ FEEDS = {
     'Mint Companies': 'https://www.livemint.com/rss/companies',
     'Business Standard Markets': 'https://www.business-standard.com/rss/markets-106.rss',
     'Inc42': 'https://inc42.com/feed/',
+    # Added for stock news. Not yet verified: if one is wrong it shows under "Did not load".
+    'ET Stocks': 'https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms',
+    'Business Standard Companies': 'https://www.business-standard.com/rss/companies-101.rss',
+    'BusinessLine Markets': 'https://www.thehindubusinessline.com/markets/stock-markets/feeder/default.rss',
 }
 
 ITEMS_PER_SOURCE = 12      # newest N items taken from each feed
@@ -22,22 +26,41 @@ AI_MAX_STORIES = 4         # how many top stories get Gemini-written concepts
 GEMINI_MODEL = 'gemini-3.8-flash'   # change here if Google renames the model
 
 # ---------- Market tables (name -> Yahoo Finance symbol) ----------
-INDIA = {
-    'Nifty 50': '^NSEI',
-    'Sensex': '^BSESN',
-    'Nifty Bank': '^NSEBANK',
-    'India VIX': '^INDIAVIX',
+# Global index board, grouped by region (name -> Yahoo Finance symbol).
+# MSCI indices have no free Yahoo data, so ETFs that track them are used as proxies.
+GLOBAL_INDICES = {
+    'India': {
+        'Nifty 50': '^NSEI', 'Sensex': '^BSESN', 'Nifty Bank': '^NSEBANK',
+        'Nifty IT': '^CNXIT', 'Nifty Midcap 50': '^NSEMDCP50',
+    },
+    'US': {
+        'S&P 500': '^GSPC', 'Nasdaq Composite': '^IXIC', 'Nasdaq 100': '^NDX',
+        'Dow Jones': '^DJI', 'Russell 2000': '^RUT',
+    },
+    'Europe': {
+        'FTSE 100': '^FTSE', 'DAX': '^GDAXI', 'CAC 40': '^FCHI',
+        'Euro Stoxx 50': '^STOXX50E', 'STOXX Europe 600': '^STOXX',
+    },
+    'Asia-Pacific': {
+        'Nikkei 225': '^N225', 'Hang Seng': '^HSI', 'Shanghai Composite': '000001.SS',
+        'KOSPI': '^KS11', 'S&P/ASX 200': '^AXJO',
+    },
+    'Global / EM (ETF proxies)': {
+        'MSCI World (URTH)': 'URTH', 'MSCI Emerging Mkts (EEM)': 'EEM',
+        'MSCI India (INDA)': 'INDA', 'MSCI ACWI (ACWI)': 'ACWI',
+    },
 }
 
-WORLD = {
-    'S&P 500': '^GSPC',
-    'Nasdaq': '^IXIC',
-    'FTSE 100': '^FTSE',
-    'Nikkei 225': '^N225',
+# Volatility, rates, currency, commodities.
+MACRO = {
+    'India VIX': '^INDIAVIX',
+    'US VIX': '^VIX',
     'US 10Y yield (%)': '^TNX',
+    'Dollar index': 'DX-Y.NYB',
     'USD/INR': 'INR=X',
     'Brent crude ($)': 'BZ=F',
     'Gold ($/oz)': 'GC=F',
+    'Silver ($/oz)': 'SI=F',
 }
 
 WATCHLIST = {
@@ -74,11 +97,14 @@ NON_FINANCE_WORDS = [
 # ---------- Desk rules (core list) ----------
 # Checked top to bottom, first match wins. Each entry: (desk, radar_category, words)
 # radar_category is None for desks that are not "deals".
+# Headlines are checked first (more reliable); only if nothing matches does it look at the
+# longer summary text (and the Earnings desk is skipped in that second pass).
 DESK_RULES = [
     ('Private Credit & Distressed Debt', 'Debt / Restructuring', [
-        'private credit', 'direct lending', 'nclt', 'chapter 11', 'bond sale', 'bonds',
-        'bond issuance', 'syndicated loan', 'refinancing', 'refinance', 'leveraged finance',
-        'mezzanine', 'insolvency', 'bankruptcy', 'debt recast', 'restructuring', 'distressed']),
+        'private credit', 'direct lending', 'nclt', 'chapter 11', 'bond sale',
+        'corporate bond', 'corporate bonds', 'bond issuance', 'syndicated loan',
+        'refinancing', 'refinance', 'leveraged finance', 'mezzanine', 'insolvency',
+        'bankruptcy', 'debt recast', 'restructuring', 'distressed']),
     ('IPOs & Block Deals', 'IPO & Block Deals', [
         'ipo', 'sme ipo', 'drhp', 'anchor investor', 'anchor book', 'qip', 'rights issue',
         'fpo', 'follow-on', 'block deal', 'bulk deal', 'price band', 'gmp']),
@@ -87,25 +113,50 @@ DESK_RULES = [
         'sovereign wealth', 'gic', 'temasek', 'mubadala', 'lp commitment', 'raises fund']),
     ('LBO, Growth & Secondary Buyouts', 'PE & Growth Equity', [
         'private equity', 'pe firm', 'buyout', 'leveraged buyout', 'lbo', 'growth equity',
-        'secondary sale', 'minority stake', 'stake sale', 'stake to', 'stake in']),
+        'secondary sale', 'minority stake', 'stake sale']),
+    ('M&A & Investment Banking', 'M&A / Control Deals', [
+        'acquisition', 'acquire', 'acquires', 'acquired', 'merger', 'merges', 'majority stake',
+        'takeover', 'open offer', 'demerger', 'divest', 'divestment']),
+    ('LBO, Growth & Secondary Buyouts', 'PE & Growth Equity', [
+        'stake in', 'stake to']),
     ('LBO, Growth & Secondary Buyouts', 'VC / Startup Funding', [
         'series a', 'series b', 'series c', 'seed funding', 'venture capital',
         'vc funding', 'startup raises', 'startup funding', 'raises ₹', 'raises $', 'raises rs']),
-    ('M&A & Investment Banking', 'M&A / Control Deals', [
-        'acquisition', 'acquire', 'acquires', 'acquired', 'merger', 'merges',
-        'takeover', 'open offer', 'demerger', 'divest', 'divestment']),
+    ('Corporate Actions', None, [
+        'buyback', 'dividend', 'stock split', 'bonus issue', 'delisting', 'order win',
+        'bags', 'bags order', 'wins order', 'secures order', 'order inflow', 'capex']),
+    ('Broker Calls & Stock Movers', None, [
+        'upgrade', 'upgrades', 'upgraded', 'downgrade', 'downgrades', 'downgraded',
+        'price target', 'target price', 'brokerage', 'buy rating',
+        'sell rating', 'overweight', 'outperform', 'underperform', 'stocks to watch',
+        'stocks to buy', 'stock picks', 'buy or sell', 'top gainers', 'top losers',
+        'shares jump', 'shares surge', 'shares rally', 'shares fall', 'shares tumble',
+        'shares slump', 'stock jumps', 'stock surges', 'stock falls', 'stock rallies']),
     ('Companies & Earnings', None, [
-        'q1', 'q2', 'q3', 'q4', 'results', 'earnings', 'profit', 'loss',
-        'revenue', 'guidance', 'margin', 'buyback', 'dividend']),
+        'q1', 'q2', 'q3', 'q4', 'results', 'earnings', 'net profit', 'profit after tax', 'pat',
+        'profit jumps', 'profit rises', 'profit falls', 'profit drops', 'profit surges',
+        'profit declines', 'first quarter', 'second quarter', 'third quarter',
+        'fourth quarter', 'guidance']),
+    ('Market Pulse & Global Cues', None, [
+        'nasdaq', 'dow jones', 'wall street', 'us stocks', 's&p 500', 'nifty', 'sensex',
+        'gold', 'silver', 'crude', 'brent', 'european stocks', 'asian markets']),
+    ('Macro Indicators', None, [
+        'gdp', 'cpi', 'wpi', 'pmi', 'inflation', 'iip', 'jobs data', 'payrolls', 'nonfarm',
+        'unemployment', 'fiscal deficit', 'trade deficit', 'gst collections', 'budget']),
     ('Central Banks & Policy', None, [
         'rbi', 'repo rate', 'monetary policy', 'fed', 'federal reserve', 'ecb',
         'interest rate', 'rate cut', 'rate hike', 'liquidity', 'sebi', 'cci',
-        'regulatory', 'regulation', 'yield', 'g-sec']),
-    ('Macro Indicators', None, [
-        'gdp', 'cpi', 'wpi', 'pmi', 'inflation', 'iip', 'jobs data', 'unemployment',
-        'fiscal deficit', 'trade deficit', 'gst collections', 'budget']),
+        'regulatory', 'regulation', 'yield', 'yields', 'g-sec', '10-year']),
 ]
 DEFAULT_DESK = 'Market Pulse & Global Cues'
+
+# Stories that fall into the default desk with low importance are dropped unless they
+# contain at least one of these words (removes stray general news).
+MARKET_WORDS = [
+    'stock', 'stocks', 'market', 'markets', 'share', 'shares', 'nifty', 'sensex', 'rupee',
+    'rbi', 'sebi', 'bank', 'banks', 'ipo', 'fund', 'funds', 'investor', 'investors', 'gold',
+    'crude', 'oil', 'bond', 'bonds', 'economy', 'gdp', 'inflation', 'tax', 'trading', 'equity',
+]
 
 # Order in which desks appear on the page (Top Deals + Deal Radar come first).
 DESK_ORDER = [
@@ -115,6 +166,8 @@ DESK_ORDER = [
     'IPOs & Block Deals',
     'Private Credit & Distressed Debt',
     'Companies & Earnings',
+    'Broker Calls & Stock Movers',
+    'Corporate Actions',
     'Central Banks & Policy',
     'Macro Indicators',
     'Market Pulse & Global Cues',

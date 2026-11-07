@@ -115,9 +115,12 @@ def fetch_all_articles(failed):
 
 # ---------------------------------------------------------------- classification
 def classify(a):
-    text = full_text(a)
-    for desk, deal_cat, words in C.DESK_RULES:
-        if has(text, words):
+    head, full = a['headline'].lower(), full_text(a)
+    for desk, deal_cat, words in C.DESK_RULES:          # pass 1: headline only
+        if has(head, words):
+            return desk, deal_cat
+    for desk, deal_cat, words in C.DESK_RULES:          # pass 2: headline + summary
+        if desk != 'Companies & Earnings' and has(full, words):
             return desk, deal_cat
     return C.DEFAULT_DESK, None
 
@@ -256,11 +259,15 @@ def ai_enrich(stories):
 
 # ---------------------------------------------------------------- market prices
 def get_quote(symbol):
-    closes = yf.Ticker(symbol).history(period='7d')['Close'].dropna()
+    """Returns (last, day %, as-of date, 1-week %, year-to-date %)."""
+    closes = yf.Ticker(symbol).history(period='1y')['Close'].dropna()
     if len(closes) < 2:
         raise ValueError('not enough data')
     last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
-    return last, (last - prev) / prev * 100, closes.index[-1].strftime('%d %b')
+    week = (last / float(closes.iloc[-6]) - 1) * 100 if len(closes) >= 6 else None
+    prior = closes[closes.index.year < closes.index[-1].year]
+    ytd = (last / float(prior.iloc[-1]) - 1) * 100 if len(prior) else None
+    return last, (last - prev) / prev * 100, closes.index[-1].strftime('%d %b'), week, ytd
 
 
 def fetch_quotes(groups, failed):
@@ -277,7 +284,7 @@ def fetch_quotes(groups, failed):
         except Exception as err:
             return title, name, None, f'{name} ({str(err)[:50]})'
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         results = list(pool.map(run, jobs))
     out = defaultdict(list)
     for title, name, quote, err in results:
@@ -323,9 +330,12 @@ def story_html(a, show_why=True, show_stage=False):
         parts.append(f'<div class="why"><b>Why it matters:</b> {esc(a["why"])}</div>')
     if a['concepts']:
         parts.append(f'<div class="chips">{chips(a)}</div>')
-    if a['related']:
-        links = ', '.join(f'<a href="{esc(r["url"])}" target="_blank" rel="noopener">{esc(r["source"])}</a>'
-                          for r in a['related'][:4])
+    if a['related'] and any(r['source'] != a['source'] for r in a['related']):
+        seen, uniq = {a['source']}, []
+        for r in a['related']:
+            if r['source'] not in seen:
+                seen.add(r['source']); uniq.append(r)
+        links = ', '.join(f'<a href="{esc(r["url"])}" target="_blank" rel="noopener">{esc(r["source"])}</a>' for r in uniq[:4])
         parts.append(f'<div class="meta">Also covered by: {links}</div>')
     parts.append('</li>')
     return ''.join(parts)
@@ -342,7 +352,7 @@ def market_table(title, rows):
     if not rows:
         return ''
     body = ''
-    for name, last, change, day in rows:
+    for name, last, change, day, *_ in rows:
         cls = 'up' if change >= 0 else 'down'
         arrow = '▲' if change >= 0 else '▼'
         body += (f'<tr><td>{esc(name)}</td><td class="num">{last:,.2f}</td>'
@@ -350,26 +360,53 @@ def market_table(title, rows):
     return f'<section><h2>{esc(title)}</h2><div class="scroll"><table>{body}</table></div></section>'
 
 
+def pct_cell(v):
+    if v is None:
+        return '<td class="num">—</td>'
+    return f'<td class="num {"up" if v >= 0 else "down"}">{v:+.2f}%</td>'
+
+
+def index_board(tables):
+    rows = ''
+    for region, members in C.GLOBAL_INDICES.items():
+        data = tables.get('Region: ' + region)
+        if not data:
+            continue
+        order = list(members)
+        rows += f'<tr class="region"><td colspan="5">{esc(region)}</td></tr>'
+        for name, last, day, asof, week, ytd in sorted(data, key=lambda r: order.index(r[0])):
+            rows += (f'<tr><td>{esc(name)}</td><td class="num">{last:,.2f}</td>'
+                     f'{pct_cell(day)}{pct_cell(week)}{pct_cell(ytd)}</tr>')
+    if not rows:
+        return ''
+    head = '<tr class="hd"><td>Index</td><td class="num">Last</td><td class="num">Day</td><td class="num">1W</td><td class="num">YTD</td></tr>'
+    return ('<section><h2>Global indices</h2><div class="scroll"><table>' + head + rows +
+            '</table></div><p class="note">Latest close for each market, so dates can differ across time zones. '
+            'MSCI rows use tracking ETFs.</p></section>')
+
+
 def sector_heat(rows):
     if not rows:
         return ''
     tiles = ''
-    for name, _, change, _ in sorted(rows, key=lambda r: r[2], reverse=True):
+    for row in sorted(rows, key=lambda r: r[2], reverse=True):
+        name, change = row[0], row[2]
         cls = 'up' if change >= 0 else 'down'
         tiles += f'<div class="tile {cls}"><span>{esc(name)}</span><b>{change:+.2f}%</b></div>'
     return f'<section><h2>Sector heat map</h2><div class="tiles">{tiles}</div></section>'
 
 
-def radar(stories):
-    sections = ''
+def radar(stories, exclude=()):
+    sections, shown = '', set()
     for cat in C.RADAR_ORDER:
-        items = sorted([s for s in stories if s['deal_cat'] == cat],
+        items = sorted([s for s in stories if s['deal_cat'] == cat and s['url'] not in exclude],
                        key=lambda s: s['importance'], reverse=True)[:C.MAX_PER_RADAR_CATEGORY]
         if items:
+            shown |= {s['url'] for s in items}
             sections += f'<h3>{esc(cat)}</h3><ul>' + ''.join(story_html(s, show_why=False, show_stage=True) for s in items) + '</ul>'
     if not sections:
-        return '<section><h2>Deal radar</h2><p class="meta">No deal-related headlines right now.</p></section>'
-    return f'<section><h2>Deal radar</h2>{sections}</section>'
+        return '', shown
+    return f'<section><h2>More deals by type</h2>{sections}</section>', shown
 
 
 def watchlist_alerts(stories):
@@ -431,6 +468,8 @@ td{padding:6px 8px;border-bottom:1px solid var(--line)}.num{text-align:right;fon
 .day{color:var(--mut);font-size:12px;text-align:right}.up{color:var(--up)}.down{color:var(--down)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-top:8px}
 .tile{border:1px solid var(--line);border-radius:8px;padding:8px;font-size:13px;display:flex;flex-direction:column}
+.region td{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding-top:12px}
+.hd td{color:var(--mut);font-size:12px}
 .tile b{font-size:15px}.note{font-size:12px;color:var(--mut)}
 li li{padding-left:0}
 """
@@ -446,6 +485,8 @@ def build_page(stories, tables, failed, notes):
 
     top_deals = sorted([s for d in C.DEAL_DESKS for s in by_desk.get(d, [])],
                        key=lambda s: s['importance'], reverse=True)[:C.MAX_TOP_DEALS]
+    top_urls = {s['url'] for s in top_deals}
+    radar_html, radar_urls = radar(stories, exclude=top_urls)
     top3 = sorted(stories, key=lambda s: s['importance'], reverse=True)[:3]
     narrative = ''
     if top3:
@@ -453,16 +494,18 @@ def build_page(stories, tables, failed, notes):
                      esc('Key themes: ' + '; '.join(s['headline'] for s in top3) + '.') + '</p></section>')
 
     body = [
-        market_table('India markets', tables.get('India markets')),
-        market_table('World', tables.get('World')),
+        index_board(tables),
+        market_table('Volatility, rates, FX & commodities', tables.get('Macro')),
         market_table('My watchlist', tables.get('My watchlist')),
         sector_heat(tables.get('Sectors')),
         narrative,
         section('Top deals today', top_deals),
-        radar(stories),
+        radar_html,
     ]
+    seen_urls = top_urls | radar_urls
     for desk in C.DESK_ORDER:
-        body.append(section(desk, by_desk.get(desk, [])[:C.MAX_PER_DESK]))
+        rest = [s for s in by_desk.get(desk, []) if s['url'] not in seen_urls]
+        body.append(section(desk, rest[:C.MAX_PER_DESK]))
     body += [story_of_the_day(stories), watchlist_alerts(stories), concepts_section(stories)]
 
     foot = ''.join(f'<p class="note">{esc(n)}</p>' for n in notes if n)
@@ -485,12 +528,14 @@ def build_page(stories, tables, failed, notes):
 def main():
     failed = []
     articles = [enrich(a) for a in fetch_all_articles(failed)]
+    articles = [a for a in articles if not (a['desk'] == C.DEFAULT_DESK and a['importance'] <= 2
+                                            and not has(full_text(a), C.MARKET_WORDS))]
     stories = cluster(articles)
     note = ai_enrich(stories)
 
-    quotes = fetch_quotes({
-        'India markets': C.INDIA, 'World': C.WORLD,
-        'My watchlist': C.WATCHLIST, 'Sectors': C.SECTORS}, failed)
+    groups = {'Macro': C.MACRO, 'My watchlist': C.WATCHLIST, 'Sectors': C.SECTORS}
+    groups.update({'Region: ' + r: m for r, m in C.GLOBAL_INDICES.items()})
+    quotes = fetch_quotes(groups, failed)
 
     page = build_page(stories, quotes, failed, [note])
     os.makedirs(OUT_DIR, exist_ok=True)
