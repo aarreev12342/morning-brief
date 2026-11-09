@@ -2,9 +2,8 @@ name: Build morning brief
 
 on:
   schedule:
-    # Every 15 minutes from 06:00 to 23:45 IST (cron uses UTC). GitHub may start a few minutes late.
     - cron: '*/15 0-18 * * *'
-  workflow_dispatch:        # "Run workflow" button for an instant refresh
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -28,7 +27,6 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
-      # Keeps Gemini answers between runs so unchanged stories are not sent again.
       - uses: actions/cache@v4
         with:
           path: cache
