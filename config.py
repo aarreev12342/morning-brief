@@ -22,6 +22,10 @@ MAX_AGE_HOURS = 48         # ignore anything older than this
 MAX_TOP_DEALS = 5
 MAX_PER_RADAR_CATEGORY = 6
 MAX_PER_DESK = 10
+DESK_CAPS = {'Market Pulse & Global Cues': 6}   # per-desk override of MAX_PER_DESK
+# Stock-news desks are decided by the headline only (summaries often mention 'upgrades' etc. in passing).
+SUMMARY_PASS_SKIP = {'Companies & Earnings', 'Broker Calls & Stock Movers', 'Corporate Actions',
+                     'Trading Ideas (low priority)'}
 AI_MAX_STORIES = 4         # how many top stories get Gemini-written concepts
 GEMINI_MODEL = 'gemini-3.8-flash'   # change here if Google renames the model
 
@@ -100,14 +104,23 @@ NON_FINANCE_WORDS = [
 # Headlines are checked first (more reliable); only if nothing matches does it look at the
 # longer summary text (and the Earnings desk is skipped in that second pass).
 DESK_RULES = [
+    # Headline-only rules (4th item True): roundups, live blogs and technical-trading noise.
+    ('Trading Ideas (low priority)', None, [
+        'marubozu', 'rsi trending', 'rsi upswing', 'stockedge', 'technical outlook', 'trade strategy',
+        'intraday', 'candlestick', 'breakout stocks', 'support and resistance', 'stock picks',
+        'stocks to buy', 'recommends three stocks', 'recommends 3 stocks'], True),
+    ('Broker Calls & Stock Movers', None, ['stocks in focus', 'stocks to watch'], True),
+    ('Market Pulse & Global Cues', None, [
+        'live updates', 'stock market live', 'sensex today', 'nifty today', 'opening bell',
+        'closing bell'], True),
     ('Private Credit & Distressed Debt', 'Debt / Restructuring', [
         'private credit', 'direct lending', 'nclt', 'chapter 11', 'bond sale',
         'corporate bond', 'corporate bonds', 'bond issuance', 'syndicated loan',
         'refinancing', 'refinance', 'leveraged finance', 'mezzanine', 'insolvency',
-        'bankruptcy', 'debt recast', 'restructuring', 'distressed']),
+        'bankruptcy', 'debt recast', 'debt restructuring', 'loan restructuring', 'distressed']),
     ('IPOs & Block Deals', 'IPO & Block Deals', [
-        'ipo', 'sme ipo', 'drhp', 'anchor investor', 'anchor book', 'qip', 'rights issue',
-        'fpo', 'follow-on', 'block deal', 'bulk deal', 'price band', 'gmp']),
+        'ipo', 'ipos', 'sme ipo', 'drhp', 'anchor investor', 'anchor book', 'qip', 'rights issue',
+        'fpo', 'follow-on', 'block deal', 'block deals', 'bulk deal', 'bulk deals', 'price band', 'gmp']),
     ('PE Fundraising & Dry Powder', 'PE Fundraising', [
         'dry powder', 'final close', 'first close', 'new fund', 'fund size', 'limited partners',
         'sovereign wealth', 'gic', 'temasek', 'mubadala', 'lp commitment', 'raises fund']),
@@ -115,7 +128,7 @@ DESK_RULES = [
         'private equity', 'pe firm', 'buyout', 'leveraged buyout', 'lbo', 'growth equity',
         'secondary sale', 'minority stake', 'stake sale']),
     ('M&A & Investment Banking', 'M&A / Control Deals', [
-        'acquisition', 'acquire', 'acquires', 'acquired', 'merger', 'merges', 'majority stake',
+        'acquisition', 'acquisitions', 'acquire', 'acquires', 'acquired', 'merger', 'mergers', 'merges', 'majority stake',
         'takeover', 'open offer', 'demerger', 'divest', 'divestment']),
     ('LBO, Growth & Secondary Buyouts', 'PE & Growth Equity', [
         'stake in', 'stake to']),
@@ -123,7 +136,7 @@ DESK_RULES = [
         'series a', 'series b', 'series c', 'seed funding', 'venture capital',
         'vc funding', 'startup raises', 'startup funding', 'raises ₹', 'raises $', 'raises rs']),
     ('Corporate Actions', None, [
-        'buyback', 'dividend', 'stock split', 'bonus issue', 'delisting', 'order win',
+        'buyback', 'buybacks', 'dividend', 'dividends', 'stock split', 'bonus issue', 'delisting', 'order win',
         'bags', 'bags order', 'wins order', 'secures order', 'order inflow', 'capex']),
     ('Broker Calls & Stock Movers', None, [
         'upgrade', 'upgrades', 'upgraded', 'downgrade', 'downgrades', 'downgraded',
@@ -171,6 +184,7 @@ DESK_ORDER = [
     'Central Banks & Policy',
     'Macro Indicators',
     'Market Pulse & Global Cues',
+    'Trading Ideas (low priority)',
 ]
 DEAL_DESKS = DESK_ORDER[:5]
 RADAR_ORDER = [
@@ -195,17 +209,32 @@ STAGE_RULES = [  # first match wins
 
 # "Why it matters" lines, first match wins.
 WHY_RULES = [
+    (['block deal', 'block deals', 'bulk deal', 'bulk deals'], 'Shows who sold and who bought. Large exits by early backers can create supply overhang and signal how they value the stock.'),
     (['subscribed', 'oversubscribed'], 'High subscription indicates strong investor demand and helps gauge IPO pricing and listing expectations.'),
     (['gmp'], 'GMP reflects unofficial grey-market expectations ahead of listing; it is not a guarantee of returns.'),
     (['anchor'], 'Anchor-book demand shows early institutional interest in the IPO.'),
     (['valuation'], 'Valuation commentary helps judge whether an offering is priced conservatively or aggressively versus peers.'),
     (['bond', 'refinancing'], 'Reflects credit-market conditions, borrowing costs and companies\' ability to raise debt.'),
-    (['acquisition', 'acquires', 'merger', 'takeover'], 'Signals consolidation, valuation trends and likely future deal activity in the sector.'),
+    (['acquisition', 'acquire', 'acquires', 'merger', 'takeover', 'majority stake'], 'Signals consolidation, valuation trends and likely future deal activity in the sector.'),
     (['private equity', 'buyout', 'venture capital', 'funding', 'raises'], 'Shows investor appetite, financing conditions and valuation trends for private companies.'),
     (['rbi', 'repo', 'inflation', 'gdp', 'fed'], 'Affects interest rates, liquidity, borrowing costs, equity valuations and deal activity.'),
     (['results', 'earnings', 'profit', 'loss'], 'Helps assess business performance, margins, guidance and investment relevance.'),
 ]
-WHY_DEFAULT = 'Relevant for understanding current market, corporate or macro trends.'
+WHY_DEFAULT = ''   # no generic filler: if nothing specific applies, the line is simply not shown
+# Used when no keyword rule above matches: one question-led line per desk.
+WHY_BY_DESK = {
+    'IPOs & Block Deals': 'Check what is being sold (a fresh issue gives the company new money, an offer for sale does not), what the proceeds are used for, valuation versus listed peers, and listing risk.',
+    'PE Fundraising & Dry Powder': 'Shows how much capital is available to deploy and which investors are backing fund managers.',
+    'LBO, Growth & Secondary Buyouts': 'Look at the stake bought, the price paid, who is selling and how the deal is financed.',
+    'M&A & Investment Banking': 'Look at buyer, target, price paid, strategic fit and how the deal is funded.',
+    'Private Credit & Distressed Debt': 'Shows lending conditions outside banks and how stressed borrowers are being handled.',
+    'Companies & Earnings': 'Look beyond profit: revenue growth, margin direction, cash flow and management guidance.',
+    'Broker Calls & Stock Movers': 'Broker views move stocks in the short run; compare the target price with valuation and the reason given.',
+    'Corporate Actions': 'Buybacks and dividends return cash to shareholders; check the size relative to market value and why now.',
+    'Central Banks & Policy': 'What changed, which sectors gain or lose, and how it feeds into rates, currency and valuations.',
+    'Macro Indicators': 'Follow the chain: data, then rate expectations, then yields and currency, then equity valuations.',
+}
+
 
 # ---------- Concepts: name -> (trigger words, beginner definition) ----------
 CONCEPTS = {
@@ -215,7 +244,7 @@ CONCEPTS = {
     'DRHP': (['drhp'], 'Draft Red Herring Prospectus. The preliminary document filed before an IPO containing company financials, risks and offer details.'),
     'IPO': (['ipo'], 'Initial Public Offering. The process by which a private company sells shares to public investors for the first time.'),
     'QIP': (['qip'], 'Qualified Institutional Placement. A way for listed companies to raise money by selling shares to qualified institutional investors.'),
-    'block deal': (['block deal', 'bulk deal'], 'A large trade executed between two parties, usually institutional investors, through a stock exchange.'),
+    'block deal': (['block deal', 'block deals', 'bulk deal', 'bulk deals'], 'A large trade executed between two parties, usually institutional investors, through a stock exchange.'),
     'dilution': (['dilution'], 'The reduction in existing shareholders\' ownership percentage when new shares are issued.'),
     'rights issue': (['rights issue'], 'An offer to existing shareholders to buy additional shares, usually at a discount.'),
     'buyback': (['buyback'], 'When a company repurchases its own shares, often to return cash or improve per-share metrics.'),
@@ -229,7 +258,7 @@ CONCEPTS = {
     'valuation multiple': (['valuation', 'valued at'], 'A ratio used to value a company, such as EV/EBITDA or P/E.'),
     'enterprise value': (['enterprise value'], 'The total value of a company, including equity value and net debt.'),
     'LBO financing': (['lbo', 'leveraged buyout'], 'Funding used in a leveraged buyout, where a large part of the purchase price is financed with debt.'),
-    'leverage': (['leveraged', 'borrowing', 'debt'], 'The use of borrowed money to finance an investment or acquisition.'),
+    'leverage': (['leveraged', 'leverage'], 'The use of borrowed money to finance an investment or acquisition.'),
     'acquisition financing': (['acquisition financing', 'acquisition loan'], 'Debt or equity raised to fund an acquisition.'),
     'refinancing': (['refinancing', 'refinance'], 'Replacing existing debt with new debt, often to reduce cost or extend maturity.'),
     'bond yield': (['bond yield', 'yields'], 'The return an investor earns from a bond, influenced by its price, coupon and maturity.'),
@@ -246,7 +275,7 @@ CONCEPTS = {
     'commodity prices': (['crude', 'oil', 'gold', 'silver', 'commodity'], 'Prices of raw materials such as crude oil, gold, metals and agricultural goods.'),
     'EBITDA margin': (['ebitda', 'margin'], 'EBITDA divided by revenue; it measures operating profitability.'),
     'operating leverage': (['operating leverage', 'margin expansion'], 'How much a company\'s profits change when revenue changes.'),
-    'guidance': (['guidance', 'outlook'], 'Management\'s forecast or outlook for future performance.'),
+    'guidance': (['guidance'], 'Management\'s forecast or outlook for future performance.'),
     'free cash flow': (['free cash flow', 'cash flow'], 'Cash generated by a business after operating expenses and capital expenditure.'),
     'earnings': (['results', 'earnings', 'profit', 'loss'], 'A company\'s reported profit or loss over a period.'),
     'broker call': (['upgrade', 'downgrade', 'price target', 'target price'], 'A brokerage\'s investment recommendation, such as buy, sell, upgrade or downgrade.'),
@@ -259,3 +288,30 @@ CONCEPT_PRIORITY = [
     'anchor investors', 'book building', 'IPO valuation', 'DRHP', 'QIP',
     'block deal', 'promoter stake', 'refinancing', 'bond yield',
 ]
+
+
+# ---------- Watchlist news matching (headline only, whole words) ----------
+# Company name -> words that identify it in a headline. Default is the full lowercase name.
+WATCHLIST_ALIASES = {
+    'Max Healthcare': ['max healthcare'],
+    'Bharat Electronics': ['bharat electronics', 'bel'],
+    'Reliance': ['reliance industries', 'reliance retail', 'jio', 'ril'],
+    'HDFC Bank': ['hdfc bank'],
+    'TCS': ['tcs', 'tata consultancy'],
+    'Bajaj Finance': ['bajaj finance'],
+}
+
+# A story is not counted as a "top deal" if its headline has one of these (commentary, not a transaction).
+TOP_DEAL_EXCLUDE = ['why', 'how', 'what', 'explains', 'interview', 'opinion', 'view', 'views']
+
+
+# ---------- Newspaper page + AI settings ----------
+WIRE_ITEMS = 14              # length of the "Latest wire" list
+EARNINGS_ROWS_MAX = 8        # results stories sent to the AI for the earnings table
+AI_ARTICLES_MAX = 4          # lead story + top deals that get a full-article summary / deal card
+AI_ARTICLE_CHARS = 3500      # how much article text the AI reads per story
+REFRESH_SECONDS = 300        # open page checks for a newer edition this often
+
+# Names (as in the tables) shown in the scrolling strip under the title.
+TICKER = ['Nifty 50', 'Sensex', 'Nifty Bank', 'S&P 500', 'Nasdaq Composite', 'FTSE 100',
+          'Nikkei 225', 'Brent crude ($)', 'Gold ($/oz)', 'USD/INR', 'US 10Y yield (%)', 'India VIX']
