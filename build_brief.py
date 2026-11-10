@@ -5,6 +5,8 @@ Runs on GitHub Actions every 15 minutes (see .github/workflows/brief.yml), or lo
 """
 import os
 import re
+import sys
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -13,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import config as C
-from util import IST, clean_text, full_text, has
+from util import IST, clean_text, full_text, has, run_with_timeout
 
 try:                      # market prices; the page still builds without it
     import yfinance as yf
@@ -222,9 +224,9 @@ def fetch_quotes(groups, failed):
     def run(job):
         title, name, sym = job
         try:
-            return title, name, get_quote(sym), None
+            return title, name, run_with_timeout(get_quote, C.QUOTE_TIMEOUT, sym), None
         except Exception as err:
-            return title, name, None, f'{name} ({str(err)[:50]})'
+            return title, name, None, f'{name} ({str(err)[:50] or "timed out"})'
 
     with ThreadPoolExecutor(max_workers=10) as pool:
         results = list(pool.map(run, jobs))
@@ -280,33 +282,43 @@ def main():
     import ai
     import render
 
+    t0 = time.monotonic()
+
+    def log(msg):
+        print(f'[{time.monotonic() - t0:6.1f}s] {msg}', flush=True)
+
     now = datetime.now(IST)
     failed = []
+    log('fetching news feeds')
     articles = [enrich(a) for a in fetch_all_articles(failed)]
     articles = [a for a in articles
                 if not (a['how'] == 'default' and not has(full_text(a), C.MARKET_WORDS))]
     stories = cluster(articles)
     for i, s in enumerate(stories):
         s['id'] = i
+    log(f'{len(articles)} articles -> {len(stories)} stories; fetching prices')
 
     groups = {'Macro': C.MACRO, 'My watchlist': C.WATCHLIST, 'Sectors': C.SECTORS}
     groups.update({'Region: ' + r: m for r, m in C.GLOBAL_INDICES.items()})
     tables = fetch_quotes(groups, failed)
+    log('prices done; starting AI layer')
 
     plan = select_front(stories)
     gem = ai.Gemini()
     extras = ai.run(gem, stories, plan, tables, now)
+    log('AI layer done; rendering page')
 
     page = render.build_page(stories, plan, tables, extras, failed, [gem.status_note()], now)
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(os.path.join(OUT_DIR, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(page)
     gem.save()
-    print(f'Built {OUT_DIR}/index.html: {len(articles)} articles -> {len(stories)} stories, '
-          f'{len(failed)} problems. {gem.status_note()}')
+    log(f'Built {OUT_DIR}/index.html. {gem.status_note()}')
     for item in failed:
-        print('  did not load:', item)
+        log('did not load: ' + item)
 
 
 if __name__ == '__main__':
     main()
+    sys.stdout.flush()
+    os._exit(0)        # do not wait for any abandoned background request

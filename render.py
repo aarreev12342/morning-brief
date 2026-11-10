@@ -392,10 +392,16 @@ def study_html(stories, plan, extras):
         parts.append(f'<div class="label">Today\'s lesson <span class="ai">AI</span></div>'
                      f'<p><b>{esc(les["concept"])}.</b> {esc(les["explanation"])}</p>'
                      f'<p><i>Apply it:</i> {esc(les["apply_it"])}</p>')
-    elif plan['lead'] and plan['lead']['concepts']:
-        s, c = plan['lead'], plan['lead']['concepts'][0]
-        parts.append(f'<div class="label">Today\'s lesson</div><p><b>{esc(c)}.</b> {esc(s["definitions"].get(c, ""))}</p>'
-                     f'<p><i>Apply it:</i> see the lead story, "{esc(s["headline"])}".</p>')
+    else:
+        best = None
+        for s in ([plan['lead']] if plan['lead'] else []) + plan['secondary'] + stories:
+            for c in s['concepts']:
+                if c in C.CONCEPT_PRIORITY and (best is None or C.CONCEPT_PRIORITY.index(c) < best[0]):
+                    best = (C.CONCEPT_PRIORITY.index(c), c, s)
+        if best:
+            _, c, s = best
+            parts.append(f'<div class="label">Today\'s lesson</div><p><b>{esc(c)}.</b> {esc(s["definitions"].get(c, ""))}</p>'
+                         f'<p><i>Apply it:</i> see "{esc(s["headline"])}".</p>')
     if extras['questions']:
         parts.append('<div class="label">Questions to research <span class="ai">AI</span></div><ol>'
                      + ''.join(f'<li>{esc(q)}</li>' for q in extras['questions']) + '</ol>')
@@ -455,7 +461,10 @@ def build_page(stories, plan, tables, extras, failed, notes, now):
     if radar:
         deals += f'<div class="cols">{radar}</div>'
     front_urls |= exclude - deal_urls          # anything shown above is not repeated in a desk below
-    deals += '<div class="cols">' + ''.join(desk(n) for n in C.DESK_ORDER[:5]) + '</div>'
+    desks_html = ''.join(desk(n) for n in C.DESK_ORDER[:5])
+    deals += f'<div class="cols">{desks_html}</div>'
+    if not (shown_deals or radar or desks_html):
+        deals += '<p class="note">No further deal news beyond the front page right now.</p>'
 
     # --- companies
     companies = ('<h2 class="sec" id="companies">Companies &amp; stocks</h2>' + earnings_table(extras['rows'])

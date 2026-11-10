@@ -95,7 +95,7 @@ NON_FINANCE_WORDS = [
     'emergency fund', 'retiree', 'leave encashment', 'oral gift',
     'fake commute', 'separation push', 'russia trip', 'peter lynch',
     'warren buffett', 'dussehra', 'diwali', 'smart kitchens', 'pf limit',
-    'data breach claims', 'labour law',
+    'data breach claims', 'labour law', 'wedding', 'et wealth',
 ]
 
 # ---------- Desk rules (core list) ----------
@@ -131,7 +131,7 @@ DESK_RULES = [
         'acquisition', 'acquisitions', 'acquire', 'acquires', 'acquired', 'merger', 'mergers', 'merges', 'majority stake',
         'takeover', 'open offer', 'demerger', 'divest', 'divestment']),
     ('LBO, Growth & Secondary Buyouts', 'PE & Growth Equity', [
-        'stake in', 'stake to']),
+        'stake in', 'stake to', 'stake', 'stakes', 'offload', 'offloads']),
     ('LBO, Growth & Secondary Buyouts', 'VC / Startup Funding', [
         'series a', 'series b', 'series c', 'seed funding', 'venture capital',
         'vc funding', 'startup raises', 'startup funding', 'raises ₹', 'raises $', 'raises rs']),
@@ -139,9 +139,10 @@ DESK_RULES = [
         'buyback', 'buybacks', 'dividend', 'dividends', 'stock split', 'bonus issue', 'delisting', 'order win',
         'bags', 'bags order', 'wins order', 'secures order', 'order inflow', 'capex']),
     ('Broker Calls & Stock Movers', None, [
-        'upgrade', 'upgrades', 'upgraded', 'downgrade', 'downgrades', 'downgraded',
+        'upgrades to', 'upgraded to', 'downgrades to', 'downgraded to', 'upgrade to buy', 'downgrade to sell',
+        'initiates coverage', 'retains buy', 'maintains buy', 'retains sell', 'maintains sell', 'retains hold',
         'price target', 'target price', 'brokerage', 'buy rating',
-        'sell rating', 'overweight', 'outperform', 'underperform', 'stocks to watch',
+        'sell rating', 'overweight', 'outperform rating', 'underperform rating', 'stocks to watch',
         'stocks to buy', 'stock picks', 'buy or sell', 'top gainers', 'top losers',
         'shares jump', 'shares surge', 'shares rally', 'shares fall', 'shares tumble',
         'shares slump', 'stock jumps', 'stock surges', 'stock falls', 'stock rallies']),
@@ -155,10 +156,10 @@ DESK_RULES = [
         'gold', 'silver', 'crude', 'brent', 'european stocks', 'asian markets']),
     ('Macro Indicators', None, [
         'gdp', 'cpi', 'wpi', 'pmi', 'inflation', 'iip', 'jobs data', 'payrolls', 'nonfarm',
-        'unemployment', 'fiscal deficit', 'trade deficit', 'gst collections', 'budget']),
+        'unemployment', 'fiscal deficit', 'trade deficit', 'gst collections', 'union budget']),
     ('Central Banks & Policy', None, [
         'rbi', 'repo rate', 'monetary policy', 'fed', 'federal reserve', 'ecb',
-        'interest rate', 'rate cut', 'rate hike', 'liquidity', 'sebi', 'cci',
+        'interest rate', 'interest rates', 'rate cut', 'rate cuts', 'rate hike', 'rate hikes', 'liquidity', 'sebi', 'cci',
         'regulatory', 'regulation', 'yield', 'yields', 'g-sec', '10-year']),
 ]
 DEFAULT_DESK = 'Market Pulse & Global Cues'
@@ -295,7 +296,7 @@ CONCEPT_PRIORITY = [
 WATCHLIST_ALIASES = {
     'Max Healthcare': ['max healthcare'],
     'Bharat Electronics': ['bharat electronics', 'bel'],
-    'Reliance': ['reliance industries', 'reliance retail', 'jio', 'ril'],
+    'Reliance': ['reliance industries', 'reliance retail', 'reliance jio', 'jio platforms', 'ril'],
     'HDFC Bank': ['hdfc bank'],
     'TCS': ['tcs', 'tata consultancy'],
     'Bajaj Finance': ['bajaj finance'],
@@ -315,3 +316,8 @@ REFRESH_SECONDS = 300        # open page checks for a newer edition this often
 # Names (as in the tables) shown in the scrolling strip under the title.
 TICKER = ['Nifty 50', 'Sensex', 'Nifty Bank', 'S&P 500', 'Nasdaq Composite', 'FTSE 100',
           'Nikkei 225', 'Brent crude ($)', 'Gold ($/oz)', 'USD/INR', 'US 10Y yield (%)', 'India VIX']
+
+# ---------- Hard time limits (seconds) so a slow outside service can never hang a build ----------
+AI_CALL_TIMEOUT = 40      # per Gemini attempt
+AI_TOTAL_BUDGET = 180     # all Gemini work in one run; after this the page is built without more AI
+QUOTE_TIMEOUT = 25        # per price lookup

@@ -1,6 +1,7 @@
 """Small helpers shared by build_brief.py, ai.py and render.py."""
 import html
 import re
+import threading
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo('Asia/Kolkata')
@@ -22,3 +23,24 @@ def has(text, words):
 
 def full_text(a):
     return (a['headline'] + ' ' + a['summary']).lower()
+
+
+def run_with_timeout(fn, seconds, *args):
+    """Runs fn(*args) in a background thread and gives up after `seconds`.
+    A hung call is abandoned (daemon thread), so it can never block the build."""
+    box = {}
+
+    def target():
+        try:
+            box['value'] = fn(*args)
+        except BaseException as err:          # noqa: BLE001 - re-raised in the caller
+            box['error'] = err
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    if t.is_alive():
+        raise TimeoutError(f'timed out after {seconds}s')
+    if 'error' in box:
+        raise box['error']
+    return box.get('value')

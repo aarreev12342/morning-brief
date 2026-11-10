@@ -12,11 +12,12 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import config as C
-from util import clean_text
+from util import clean_text, run_with_timeout
 
 CACHE_PATH = os.environ.get('AI_CACHE', 'cache/ai_cache.json')
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -88,16 +89,20 @@ def sha(*parts):
 
 
 # ---------------------------------------------------------------- article text
-def fetch_article_text(url, limit):
-    try:
-        req = urllib.request.Request(url, headers=UA)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read(700_000).decode('utf-8', 'ignore')
-    except Exception:
-        return ''
+def _fetch(url, limit):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        raw = resp.read(700_000).decode('utf-8', 'ignore')
     raw = re.sub(r'(?is)<(script|style|nav|footer|header|aside|form)[^>]*>.*?</\1>', ' ', raw)
     paras = [clean_text(p) for p in re.findall(r'(?is)<p[^>]*>(.*?)</p>', raw)]
     return ' '.join(p for p in paras if len(p) > 40)[:limit]
+
+
+def fetch_article_text(url, limit):
+    try:
+        return run_with_timeout(_fetch, 15, url, limit)
+    except Exception:
+        return ''
 
 
 # ---------------------------------------------------------------- Gemini client
@@ -110,6 +115,7 @@ class Gemini:
         self.fail_count = 0
         self.dirty = False
         self.cache = {}
+        self.deadline = time.monotonic() + C.AI_TOTAL_BUDGET
         try:
             with open(CACHE_PATH, encoding='utf-8') as f:
                 self.cache = json.load(f)
@@ -130,20 +136,30 @@ class Gemini:
         except Exception as err:
             self.reason = f'Gemini client failed to start ({str(err)[:80]})'
 
-    def _raw(self, prompt):
-        """Same call style as your Colab notebook; falls back to generate_content if it fails."""
-        try:
-            text = self.client.interactions.create(
-                model=C.GEMINI_MODEL, input=prompt,
-                generation_config={'thinking_level': 'low'}).output_text
-            if text:
-                return text
-        except Exception:
-            pass
+    def _interactions(self, prompt):
+        return self.client.interactions.create(
+            model=C.GEMINI_MODEL, input=prompt,
+            generation_config={'thinking_level': 'low'}).output_text
+
+    def _generate(self, prompt):
         resp = self.client.models.generate_content(
             model=C.GEMINI_MODEL, contents=prompt,
             config=self.types.GenerateContentConfig(response_mime_type='application/json'))
         return resp.text
+
+    def _raw(self, prompt):
+        """Tries the call style from your Colab notebook, then generate_content.
+        Each attempt has a hard time limit, so a hung request is abandoned."""
+        errors = []
+        for attempt in (self._interactions, self._generate):
+            try:
+                text = run_with_timeout(attempt, C.AI_CALL_TIMEOUT, prompt)
+                if text:
+                    return text
+                errors.append('empty reply')
+            except Exception as err:
+                errors.append(str(err)[:60])
+        raise RuntimeError(' / '.join(errors))
 
     def ask(self, name, prompt, key, stamp=''):
         """Returns parsed JSON, or None. `key` decides cache reuse."""
@@ -151,6 +167,10 @@ class Gemini:
             self.cached += 1
             return self.cache[key]
         if not self.ok or self.fail_count >= 2:
+            return None
+        if time.monotonic() > self.deadline:
+            if not any('budget' in e for e in self.errors):
+                self.errors.append('time budget used up, rest skipped')
             return None
         try:
             self.calls += 1
