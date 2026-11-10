@@ -1,25 +1,23 @@
 name: Build morning brief
-
 on:
   schedule:
     - cron: '*/15 0-18 * * *'
   workflow_dispatch:
   push:
     branches: [main]
-
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
-
 concurrency:
   group: pages
   cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,21 +30,20 @@ jobs:
           path: cache
           key: ai-cache-${{ github.run_id }}
           restore-keys: ai-cache-
-      - name: Build the page
+      - name: Build page
+        timeout-minutes: 6
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python build_brief.py
+      - name: Save deal log
+        run: |
+          git config user.name "morning-brief-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/deals.csv || true
+          git diff --cached --quiet || (git commit -m "Update deal log" && git pull --rebase && git push)
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
