@@ -8,7 +8,7 @@ IST = ZoneInfo('Asia/Kolkata')
 
 
 def clean_text(text):
-    text = html.unescape(text or '')
+    text = html.unescape(text or '').replace('\u2019', "'").replace('\u2018', "'")
     text = re.sub(r'<[^>]+>', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 

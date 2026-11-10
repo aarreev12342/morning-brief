@@ -15,14 +15,17 @@ FEEDS = {
     'ET Stocks': 'https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms',
     'Business Standard Companies': 'https://www.business-standard.com/rss/companies-101.rss',
     'BusinessLine Markets': 'https://www.thehindubusinessline.com/markets/stock-markets/feeder/default.rss',
+    # Primary sources (regulators). Unverified addresses: if one is wrong or blocks bots it shows under "Did not load".
+    'RBI press releases': 'https://www.rbi.org.in/pressreleases_rss.xml',
+    'SEBI releases': 'https://www.sebi.gov.in/sebirss.xml',
 }
 
 ITEMS_PER_SOURCE = 12      # newest N items taken from each feed
 MAX_AGE_HOURS = 48         # ignore anything older than this
 MAX_TOP_DEALS = 5
 MAX_PER_RADAR_CATEGORY = 6
-MAX_PER_DESK = 10
-DESK_CAPS = {'Market Pulse & Global Cues': 6}   # per-desk override of MAX_PER_DESK
+MAX_PER_DESK = 5
+DESK_CAPS = {'Market Pulse & Global Cues': 4}   # per-desk override of MAX_PER_DESK
 # Stock-news desks are decided by the headline only (summaries often mention 'upgrades' etc. in passing).
 SUMMARY_PASS_SKIP = {'Companies & Earnings', 'Broker Calls & Stock Movers', 'Corporate Actions',
                      'Trading Ideas (low priority)'}
@@ -98,6 +101,9 @@ NON_FINANCE_WORDS = [
     'data breach claims', 'labour law', 'wedding', 'et wealth',
 ]
 
+# Dropped completely when the HEADLINE contains one of these (lifestyle / retail-content noise).
+DROP_HEADLINE_WORDS = ["here's how", 'banks open or closed', 'bank holiday', 'wedding']
+
 # ---------- Desk rules (core list) ----------
 # Checked top to bottom, first match wins. Each entry: (desk, radar_category, words)
 # radar_category is None for desks that are not "deals".
@@ -108,7 +114,9 @@ DESK_RULES = [
     ('Trading Ideas (low priority)', None, [
         'marubozu', 'rsi trending', 'rsi upswing', 'stockedge', 'technical outlook', 'trade strategy',
         'intraday', 'candlestick', 'breakout stocks', 'support and resistance', 'stock picks',
-        'stocks to buy', 'recommends three stocks', 'recommends 3 stocks'], True),
+        'stocks to buy', 'recommends three stocks', 'recommends 3 stocks', 'do you own', 'multibagger',
+        'technical experts', 'technical expert', 'volume shocker', 'stock recommendations', 'dividend alert',
+        'penny stock', 'stocks under', 'stock under'], True),
     ('Broker Calls & Stock Movers', None, ['stocks in focus', 'stocks to watch'], True),
     ('Market Pulse & Global Cues', None, [
         'live updates', 'stock market live', 'sensex today', 'nifty today', 'opening bell',
@@ -136,7 +144,7 @@ DESK_RULES = [
         'series a', 'series b', 'series c', 'seed funding', 'venture capital',
         'vc funding', 'startup raises', 'startup funding', 'raises ₹', 'raises $', 'raises rs']),
     ('Corporate Actions', None, [
-        'buyback', 'buybacks', 'dividend', 'dividends', 'stock split', 'bonus issue', 'delisting', 'order win',
+        'layoffs', 'layoff', 'job cuts', 'retrenchment', 'buyback', 'buybacks', 'dividend', 'dividends', 'stock split', 'bonus issue', 'delisting', 'order win',
         'bags', 'bags order', 'wins order', 'secures order', 'order inflow', 'capex']),
     ('Broker Calls & Stock Movers', None, [
         'upgrades to', 'upgraded to', 'downgrades to', 'downgraded to', 'upgrade to buy', 'downgrade to sell',
@@ -239,6 +247,7 @@ WHY_BY_DESK = {
 
 # ---------- Concepts: name -> (trigger words, beginner definition) ----------
 CONCEPTS = {
+    'fresh issue vs offer for sale': (['fresh issue', 'offer for sale', 'ofs', 'all-fresh', 'fresh equity'], 'Fresh issue: the company receives new capital, which can fund growth or repay debt. Offer for sale (OFS): existing shareholders sell their shares and the company receives nothing.'),
     'anchor investors': (['anchor investor', 'anchor book'], 'Large institutional investors invited to invest in an IPO before it opens to the public. Their participation signals confidence and provides early demand.'),
     'book building': (['book building', 'price band', 'issue price'], 'The process where investors bid for IPO shares within a price band, helping determine the final issue price.'),
     'IPO valuation': (['ipo valuation', 'valued at'], 'The estimated value of a company at the time of its IPO, usually based on earnings, growth and comparable companies.'),
@@ -284,6 +293,7 @@ CONCEPTS = {
 
 # Concepts shown first when a story matches several (most PE/IB-relevant first).
 CONCEPT_PRIORITY = [
+    'fresh issue vs offer for sale',
     'control premium', 'valuation multiple', 'enterprise value', 'LBO financing',
     'acquisition financing', 'exit', 'private equity', 'venture capital',
     'anchor investors', 'book building', 'IPO valuation', 'DRHP', 'QIP',
@@ -319,5 +329,106 @@ TICKER = ['Nifty 50', 'Sensex', 'Nifty Bank', 'S&P 500', 'Nasdaq Composite', 'FT
 
 # ---------- Hard time limits (seconds) so a slow outside service can never hang a build ----------
 AI_CALL_TIMEOUT = 40      # per Gemini attempt
-AI_TOTAL_BUDGET = 180     # all Gemini work in one run; after this the page is built without more AI
+AI_TOTAL_BUDGET = 200     # all Gemini work in one run; after this the page is built without more AI
 QUOTE_TIMEOUT = 25        # per price lookup
+
+
+# ---------- Upgrade-plan settings ----------
+# Why-it-matters is shown for stories at or above this importance (1-5).
+WHY_MIN_IMPORTANCE = 3
+AI_WHY_MAX = 14              # stories per run that get an AI-written, story-specific "why it matters"
+
+# Your own watchlist notes. Edit these; they are shown exactly as written.
+# catalyst = what you are watching for next. thesis = your one-line view (leave '' to hide).
+WATCHLIST_NOTES = {
+    'Max Healthcare': {'catalyst': 'Occupancy, ARPOB, bed additions', 'thesis': ''},
+    'Bharat Electronics': {'catalyst': 'Order inflow, execution, margins', 'thesis': ''},
+    'Reliance': {'catalyst': 'O2C margins, Jio, retail', 'thesis': ''},
+    'HDFC Bank': {'catalyst': 'Q3 earnings, NIM, credit growth', 'thesis': ''},
+    'TCS': {'catalyst': 'Client spending, deal wins', 'thesis': ''},
+    'Bajaj Finance': {'catalyst': 'AUM growth, asset quality', 'thesis': ''},
+}
+# A headline mentioning the company AND one of these words shows as an alert badge next to it.
+WATCHLIST_ALERT_WORDS = {
+    'Results': ['q1', 'q2', 'q3', 'q4', 'results', 'net profit'],
+    'Dividend': ['dividend'],
+    'Buyback': ['buyback'],
+    'Stake / block deal': ['block deal', 'bulk deal', 'stake'],
+    'Broker call': ['target price', 'price target', 'upgrades', 'downgrades', 'upgraded', 'downgraded', 'initiates coverage'],
+}
+
+# Source tiers shown as a small badge. Anything not listed is "Press".
+SOURCE_TIERS = {
+    'RBI press releases': 'Primary', 'SEBI releases': 'Primary',
+    'Inc42': 'Startup press',
+}
+
+# A "Top deal" headline must contain one of these (a real transaction, not commentary).
+TRANSACTION_WORDS = [
+    'acquire', 'acquires', 'acquired', 'acquisition', 'merger', 'merges', 'buyout', 'takeover', 'open offer',
+    'stake', 'stakes', 'raises', 'raised', 'funding', 'ipo', 'drhp', 'qip', 'rights issue', 'block deal',
+    'block deals', 'bulk deal', 'bulk deals', 'offload', 'offloads', 'sells', 'buys', 'invests',
+    'files draft papers', 'bond sale', 'demerger', 'divest', 'divestment', 'to buy', 'to sell']
+
+# Headlines about investor flows (shown together under Markets).
+FLOW_WORDS = ['fpi', 'fpis', 'fii', 'fiis', 'dii', 'diis', 'foreign portfolio', 'foreign institutional',
+              'institutional flows', 'net bought', 'net sold']
+MAX_FLOW_ITEMS = 5
+
+# Topics checked for headlines pointing in opposite directions.
+CONFLICT_TOPICS = {
+    'Indian bond yields': ['yield', 'yields', 'g-sec', 'bond', 'bonds'],
+    'Rupee': ['rupee'],
+    'Crude oil': ['crude', 'brent'],
+    'Gold': ['gold'],
+}
+UP_WORDS = ['rise', 'rises', 'rose', 'jump', 'jumps', 'surge', 'surges', 'harden', 'hardens', 'climb',
+            'climbs', 'gain', 'gains', 'rally', 'rallies', 'higher', 'firm', 'firms', 'strengthen']
+DOWN_WORDS = ['fall', 'falls', 'fell', 'drop', 'drops', 'dips', 'dip', 'slip', 'slips', 'ease', 'eases',
+              'decline', 'declines', 'slide', 'slides', 'lower', 'weak', 'weaken', 'plunge', 'tumble', 'slump']
+
+# India macro snapshot. These numbers do not come from any feed: fill in the latest value and date from the
+# primary source yourself (RBI, MOSPI, NSDL). Rows with an empty value are hidden. Example row:
+#   {'name': 'RBI repo rate', 'value': '', 'as_of': '', 'source': 'https://www.rbi.org.in'},
+MACRO_MANUAL = [
+    {'name': 'RBI repo rate', 'value': '', 'as_of': '', 'source': 'https://www.rbi.org.in'},
+    {'name': 'CPI inflation (India)', 'value': '', 'as_of': '', 'source': 'https://mospi.gov.in'},
+    {'name': 'WPI inflation (India)', 'value': '', 'as_of': '', 'source': 'https://eaindustry.nic.in'},
+    {'name': 'India 10-year G-sec yield', 'value': '', 'as_of': '', 'source': 'https://www.ccilindia.com'},
+    {'name': 'Forex reserves', 'value': '', 'as_of': '', 'source': 'https://www.rbi.org.in'},
+    {'name': 'Bank credit growth', 'value': '', 'as_of': '', 'source': 'https://www.rbi.org.in'},
+    {'name': 'Deposit growth', 'value': '', 'as_of': '', 'source': 'https://www.rbi.org.in'},
+]
+
+# Where to check the facts yourself (shown at the bottom of the Study desk).
+PRIMARY_LINKS = [
+    ('RBI', 'https://www.rbi.org.in'), ('SEBI', 'https://www.sebi.gov.in'),
+    ('NSE announcements', 'https://www.nseindia.com/companies-listing/corporate-filings-announcements'),
+    ('BSE announcements', 'https://www.bseindia.com/corporates/ann.html'),
+    ('MOSPI', 'https://mospi.gov.in'), ('FPI data (NSDL)', 'https://www.fpi.nsdl.co.in'),
+    ('CCIL (G-sec yields)', 'https://www.ccilindia.com'), ('IMF data', 'https://www.imf.org/en/Data'),
+]
+
+# Research-question templates used when Gemini is unavailable. {h} is the story headline.
+RESEARCH_BY_DESK = {
+    'IPOs & Block Deals': 'In "{h}": what is being sold (fresh issue or offer for sale), what will the money be used for, and how is it priced against listed peers?',
+    'LBO, Growth & Secondary Buyouts': 'In "{h}": who is buying and selling, at what price, and what does it say about how investors value the company?',
+    'M&A & Investment Banking': 'In "{h}": what is the buyer paying, how is it funded, and what is the strategic logic?',
+    'PE Fundraising & Dry Powder': 'In "{h}": how large is the fund, who are the investors, and where will the capital be deployed?',
+    'Private Credit & Distressed Debt': 'In "{h}": who is lending or restructuring, on what terms, and what does it say about credit conditions?',
+    'Companies & Earnings': 'In "{h}": did revenue growth or margins drive the profit change, and what did management guide for next quarter?',
+    'Corporate Actions': 'In "{h}": how big is the action compared with market value, and why now?',
+    'Broker Calls & Stock Movers': 'In "{h}": what reason did the broker give, and does the target price fit the valuation?',
+    'Central Banks & Policy': 'In "{h}": through which channel (rates, currency, flows) does this reach Indian equities and bonds?',
+    'Macro Indicators': 'In "{h}": which way does this move rate expectations, and who gains or loses?',
+}
+
+# ---------- Deal log (kept in your repo so it builds up over time) ----------
+DEAL_LOG_PATH = 'data/deals.csv'
+DEAL_LOG_MAX_ROWS = 400
+DEAL_LOG_SHOW = 25
+
+# ---------- AI reliability ----------
+AI_RETRIES = 2               # extra tries (with a short pause) when Gemini answers 503/429/timeout
+AI_CACHE_TTL_HOURS = 24      # a good AI answer is reused for this long
+EARNINGS_CARDS = 3           # results stories that get the full earnings card (article text is read)

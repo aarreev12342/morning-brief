@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import config as C
+import deals
 from util import IST, clean_text, full_text, has, run_with_timeout
 
 try:                      # market prices; the page still builds without it
@@ -86,7 +87,7 @@ def fetch_all_articles(failed):
         for a in items:
             if a['published'] and a['published'] < cutoff:
                 continue
-            if has(full_text(a), C.NON_FINANCE_WORDS):
+            if has(full_text(a), C.NON_FINANCE_WORDS) or has(a['headline'].lower(), C.DROP_HEADLINE_WORDS):
                 continue
             articles.append(a)
     return articles
@@ -203,15 +204,18 @@ def cluster(articles):
 
 # ---------------------------------------------------------------- market prices
 def get_quote(symbol):
-    """Returns (last, day %, as-of date, 1-week %, year-to-date %)."""
-    closes = yf.Ticker(symbol).history(period='1y')['Close'].dropna()
+    """Returns (last, day %, as-of date, 1-week %, year-to-date %, 52-week high, 52-week low)."""
+    hist = yf.Ticker(symbol).history(period='1y')
+    closes = hist['Close'].dropna()
     if len(closes) < 2:
         raise ValueError('not enough data')
     last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
     week = (last / float(closes.iloc[-6]) - 1) * 100 if len(closes) >= 6 else None
     prior = closes[closes.index.year < closes.index[-1].year]
     ytd = (last / float(prior.iloc[-1]) - 1) * 100 if len(prior) else None
-    return last, (last - prev) / prev * 100, closes.index[-1].strftime('%d %b'), week, ytd
+    hi = float(hist['High'].dropna().max()) if 'High' in hist else float(closes.max())
+    lo = float(hist['Low'].dropna().min()) if 'Low' in hist else float(closes.min())
+    return last, (last - prev) / prev * 100, closes.index[-1].strftime('%d %b'), week, ytd, hi, lo
 
 
 def fetch_quotes(groups, failed):
@@ -267,14 +271,38 @@ def select_front(stories):
     secondary = ranked[1:7]
 
     cands = [s for d in C.DEAL_DESKS for s in by_desk.get(d, [])
-             if s['how'] == 'head' and not has(s['headline'].lower(), C.TOP_DEAL_EXCLUDE)]
+             if deals.is_deal(s)]            # a real transaction headline, not commentary
     top_deals = sorted(cands, key=lambda s: (s['importance'], s['published'] or FAR_PAST),
                        reverse=True)[:C.MAX_TOP_DEALS]
     earnings = [s for s in by_desk.get('Companies & Earnings', []) if s['how'] == 'head'][:C.EARNINGS_ROWS_MAX]
     wire = sorted([s for s in stories if not s['desk'].startswith('Trading Ideas')],
                   key=lambda s: s['published'] or FAR_PAST, reverse=True)[:C.WIRE_ITEMS]
+    day_ago = datetime.now(timezone.utc) - timedelta(hours=30)
+    flows = sorted([s for s in stories if has(s['headline'].lower(), C.FLOW_WORDS)],
+                   key=lambda s: s['published'] or FAR_PAST, reverse=True)[:C.MAX_FLOW_ITEMS]
     return dict(by_desk=by_desk, lead=lead, secondary=secondary, top_deals=top_deals,
-                earnings=earnings, wire=wire)
+                earnings=earnings, wire=wire, flows=flows, conflicts=find_conflicts(stories, day_ago))
+
+
+def find_conflicts(stories, since):
+    """Headlines on the same topic pointing in opposite directions (they may cover different periods)."""
+    out = []
+    recent = [s for s in stories if not s['desk'].startswith('Trading Ideas')
+              and (s['published'] is None or s['published'] >= since)]
+    for topic, words in C.CONFLICT_TOPICS.items():
+        ups, downs = [], []
+        for s in recent:
+            h = s['headline'].lower()
+            if not has(h, words):
+                continue
+            up, down = has(h, C.UP_WORDS), has(h, C.DOWN_WORDS)
+            if up and not down:
+                ups.append(s)
+            elif down and not up:
+                downs.append(s)
+        if ups and downs:
+            out.append({'topic': topic, 'up': ups[0], 'down': downs[0]})
+    return out
 
 
 # ---------------------------------------------------------------- main
@@ -297,6 +325,10 @@ def main():
     for i, s in enumerate(stories):
         s['id'] = i
     log(f'{len(articles)} articles -> {len(stories)} stories; fetching prices')
+    if len(articles) < 3:
+        # Nothing usable loaded: stop here so the last good edition stays online.
+        print('No news loaded; keeping the previous edition. Problems: ' + '; '.join(failed), flush=True)
+        sys.exit(1)
 
     groups = {'Macro': C.MACRO, 'My watchlist': C.WATCHLIST, 'Sectors': C.SECTORS}
     groups.update({'Region: ' + r: m for r, m in C.GLOBAL_INDICES.items()})
@@ -306,14 +338,21 @@ def main():
     plan = select_front(stories)
     gem = ai.Gemini()
     extras = ai.run(gem, stories, plan, tables, now)
-    log('AI layer done; rendering page')
+    log('AI layer done; updating deal log and rendering page')
+    extras['deal_log'], added = deals.update(stories, extras, now)
 
-    page = render.build_page(stories, plan, tables, extras, failed, [gem.status_note()], now)
+    page = render.build_page(stories, plan, tables, extras, failed, [gem.reader_note()], now, gem.detail())
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(os.path.join(OUT_DIR, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(page)
+    try:
+        import shutil
+        if os.path.exists(C.DEAL_LOG_PATH):
+            shutil.copy(C.DEAL_LOG_PATH, os.path.join(OUT_DIR, 'deals.csv'))
+    except Exception:
+        pass
     gem.save()
-    log(f'Built {OUT_DIR}/index.html. {gem.status_note()}')
+    log(f'Built {OUT_DIR}/index.html. {gem.status_note()} Deal log: {added} new row(s).')
     for item in failed:
         log('did not load: ' + item)
 

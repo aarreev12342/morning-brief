@@ -58,6 +58,12 @@ def plain(value, limit=140):
     return str(value).strip()[:limit]
 
 
+def textfield(value, source, limit=120):
+    """A short phrase from the article; dropped if it contains a number the article does not."""
+    value = plain(value, limit)
+    return value if value == 'Not disclosed' or numbers_ok(value, source) else 'Not disclosed'
+
+
 def names_ok(value, source):
     """Keeps only the names that actually appear in the article text (guards against a card
     for one story being filled with details from another)."""
@@ -106,6 +112,11 @@ def fetch_article_text(url, limit):
 
 
 # ---------------------------------------------------------------- Gemini client
+PROMPT_VERSION = 'v5'
+TRANSIENT = ('503', '429', '500', '502', '504', 'unavailable', 'resource_exhausted', 'overloaded',
+             'timed out', 'timeout', 'deadline')
+
+
 class Gemini:
     def __init__(self):
         self.ok = False
@@ -118,7 +129,11 @@ class Gemini:
         self.deadline = time.monotonic() + C.AI_TOTAL_BUDGET
         try:
             with open(CACHE_PATH, encoding='utf-8') as f:
-                self.cache = json.load(f)
+                loaded = json.load(f)
+            ttl = C.AI_CACHE_TTL_HOURS * 3600
+            now = time.time()
+            self.cache = {k: v for k, v in loaded.items()
+                          if isinstance(v, dict) and now - v.get('_ts', 0) <= ttl}
         except Exception:
             pass
         key = os.environ.get('GEMINI_API_KEY', '').strip()
@@ -130,7 +145,7 @@ class Gemini:
             from google.genai import types
             self.types = types
             self.client = genai.Client(api_key=key, http_options=types.HttpOptions(
-                timeout=45_000, retry_options=types.HttpRetryOptions(attempts=2)))
+                timeout=45_000, retry_options=types.HttpRetryOptions(attempts=1)))
             self.ok = True
             self.reason = ''
         except Exception as err:
@@ -148,25 +163,45 @@ class Gemini:
         return resp.text
 
     def _raw(self, prompt):
-        """Tries the call style from your Colab notebook, then generate_content.
-        Each attempt has a hard time limit, so a hung request is abandoned."""
+        """Tries the call style from your Colab notebook, then generate_content. Each attempt has a hard time
+        limit. Busy-server errors (503/429/timeouts) are retried after a short pause."""
         errors = []
-        for attempt in (self._interactions, self._generate):
-            try:
-                text = run_with_timeout(attempt, C.AI_CALL_TIMEOUT, prompt)
-                if text:
-                    return text
-                errors.append('empty reply')
-            except Exception as err:
-                errors.append(str(err)[:60])
-        raise RuntimeError(' / '.join(errors))
+        for rnd in range(C.AI_RETRIES + 1):
+            for attempt in (self._interactions, self._generate):
+                if time.monotonic() > self.deadline:
+                    errors.append('time budget used up')
+                    raise RuntimeError(' / '.join(dict.fromkeys(errors))[:200])
+                try:
+                    text = run_with_timeout(attempt, C.AI_CALL_TIMEOUT, prompt)
+                    if text:
+                        return text
+                    errors.append('empty reply')
+                except Exception as err:
+                    errors.append(str(err)[:60] or 'timed out')
+            busy = any(t in e.lower() for e in errors[-2:] for t in TRANSIENT)
+            if rnd < C.AI_RETRIES and busy:
+                time.sleep(3 * (rnd + 1))
+                continue
+            break
+        raise RuntimeError(' / '.join(dict.fromkeys(errors))[:200])
+
+    def cache_get(self, key):
+        hit = self.cache.get(key)
+        if hit is not None:
+            self.cached += 1
+        return hit
+
+    def put(self, key, data):
+        data['_ts'] = time.time()
+        self.cache[key] = data
+        self.dirty = True
 
     def ask(self, name, prompt, key, stamp=''):
         """Returns parsed JSON, or None. `key` decides cache reuse."""
-        if key in self.cache:
-            self.cached += 1
-            return self.cache[key]
-        if not self.ok or self.fail_count >= 2:
+        hit = self.cache_get(key)
+        if hit is not None:
+            return hit
+        if not self.ok or self.fail_count >= 3:
             return None
         if time.monotonic() > self.deadline:
             if not any('budget' in e for e in self.errors):
@@ -175,14 +210,14 @@ class Gemini:
         try:
             self.calls += 1
             data = parse_json(self._raw(prompt))
-            if isinstance(data, dict):
-                data['_at'] = stamp
-            self.cache[key] = data
-            self.dirty = True
+            if not isinstance(data, dict):
+                raise ValueError('reply was not a JSON object')
+            data['_at'] = stamp
+            self.put(key, data)
             return data
         except Exception as err:
             self.fail_count += 1
-            self.errors.append(f'{name}: {str(err)[:70]}')
+            self.errors.append(f'{name}: {str(err)[:90]}')
             return None
 
     def save(self):
@@ -190,19 +225,28 @@ class Gemini:
             return
         try:
             os.makedirs(os.path.dirname(CACHE_PATH) or '.', exist_ok=True)
-            keep = dict(list(self.cache.items())[-150:])
+            items = sorted(self.cache.items(), key=lambda kv: kv[1].get('_ts', 0))[-400:]
             with open(CACHE_PATH, 'w', encoding='utf-8') as f:
-                json.dump(keep, f, ensure_ascii=False)
+                json.dump(dict(items), f, ensure_ascii=False)
         except Exception:
             pass
 
-    def status_note(self):
+    def detail(self):
+        """Technical line for the build log and an HTML comment (not shown to the reader)."""
         if not self.ok:
-            return f'AI sections off ({self.reason}); the page uses built-in rules instead.'
+            return f'AI off ({self.reason})'
         note = f'AI: {self.calls} new request(s), {self.cached} reused from cache.'
         if self.errors:
             note += ' Problems: ' + '; '.join(self.errors)
         return note
+
+    def reader_note(self):
+        """Short, calm line for readers. Empty when everything worked or AI was never switched on."""
+        if self.ok and self.errors:
+            return 'Some AI-written sections are unavailable right now, so article summaries are shown instead.'
+        return ''
+
+    status_note = detail
 
 
 # ---------------------------------------------------------------- prompts
@@ -225,12 +269,13 @@ STORIES (id | desk | source | headline | summary):
 {STORIES}
 
 Return JSON in exactly this shape:
-{"market_read": ["...", "...", "..."],
+{"market_read": ["...", "..."],
  "lesson": {"concept": "...", "explanation": "...", "apply_it": "..."},
  "research_questions": ["...", "...", "..."]}
 
-market_read: 3 or 4 short sentences on how markets moved today. Quote percentages exactly as given above.
-Give a cause for a move ONLY if one of the stories above states it; otherwise just say what moved. Do not predict.
+market_read: 2 to 4 short sentences interpreting how today's moves connect (India versus global cues, rates, currency,
+crude). Do NOT repeat the list of figures. Name a cause for a move ONLY if one of the stories above states it;
+otherwise say the cause is not stated in today's headlines. Do not predict.
 lesson: one finance concept that helps understand one of today's stories. explanation: 2-3 sentences. apply_it: 1-2 sentences tying it to that story by headline.
 research_questions: 3 questions a student could answer by reading a primary source (filing, RBI or SEBI release, company presentation). Do not include numbers that are not given above.
 '''
@@ -248,16 +293,35 @@ ARTICLES:
 {ARTICLES}
 '''
 
+WHY_PROMPT = RULES + '''
+
+For each story below write ONE sentence (at most 30 words) on why it matters to an investor: what changed, who gains
+or loses, or what to watch next. Be specific to this story, not generic. Use ONLY facts in its headline and summary.
+If the text is too thin to say anything specific, return an empty string for that story.
+
+Return JSON: {"items": [{"id": 0, "why": "..."}]}
+
+STORIES:
+{STORIES}
+'''
+
 EARNINGS_PROMPT = RULES + '''
 
-Each story below reports company results. For each, extract:
-company, period (e.g. "Q2 FY27"), revenue_growth, profit_growth, margin, driver.
-revenue_growth and profit_growth: the year-on-year % change ONLY if stated (e.g. "+17%"), else "n/a".
-margin: an operating or EBITDA margin, or its change, ONLY if stated, else "n/a".
+Each story below reports company results. For each, extract these fields:
+company, period (e.g. "Q2 FY27"),
+result: "in line", "beat" or "miss" ONLY if the text says so against expectations, else "n/a",
+revenue_growth and profit_growth: the year-on-year % change ONLY if stated (e.g. "+17%"), else "n/a",
+ebitda: the EBITDA figure or its growth ONLY if stated, else "n/a",
+margin: an operating or EBITDA margin, or its change, ONLY if stated, else "n/a",
+net_debt: net debt or net debt/EBITDA ONLY if stated, else "n/a",
+key_positive, key_negative: one short phrase each from the text, else "n/a",
+broker_view: what brokerages say, ONLY if stated, else "n/a",
+what_to_watch: one short phrase of what the text says to watch next, else "n/a",
 driver: a short phrase from the text on why results moved, else "n/a".
 
-Return JSON: {"rows": [{"id": 0, "company": "...", "period": "...", "revenue_growth": "n/a",
-"profit_growth": "+5%", "margin": "n/a", "driver": "n/a"}]}
+Return JSON: {"rows": [{"id": 0, "company": "...", "period": "...", "result": "n/a", "revenue_growth": "n/a",
+"profit_growth": "+5%", "ebitda": "n/a", "margin": "n/a", "net_debt": "n/a", "key_positive": "n/a",
+"key_negative": "n/a", "broker_view": "n/a", "what_to_watch": "n/a", "driver": "n/a"}]}
 
 STORIES:
 {STORIES}
@@ -274,16 +338,28 @@ def numbers_text(tables):
 
 
 # ---------------------------------------------------------------- orchestration
+def _items(data):
+    items = data.get('items') if isinstance(data, dict) else None
+    return items if isinstance(items, list) else []
+
+
+def _sid(it):
+    try:
+        return int(it.get('id'))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def run(g, stories, plan, tables, now):
     out = {'read': [], 'read_at': '', 'lesson': None, 'questions': [],
-           'summaries': {}, 'deals': {}, 'rows': []}
+           'summaries': {}, 'deals': {}, 'rows': [], 'whys': {}}
     if not g.ok:
         return out
     stamp = now.strftime('%H:%M')
     bucket = now.strftime('%Y-%m-%d %H')
     far = now.min.replace(tzinfo=now.tzinfo)
 
-    # ---- 1. editor: market read, lesson, research questions (at most once an hour)
+    # ---- 1. editor: interpretation, lesson, research questions (at most once an hour)
     pool = sorted([s for s in stories if not s['desk'].startswith('Trading Ideas')],
                   key=lambda s: (s['importance'], s['published'] or far), reverse=True)[:30]
     stories_text = '\n'.join(
@@ -291,7 +367,7 @@ def run(g, stories, plan, tables, now):
     nums = numbers_text(tables)
     prompt = (EDITOR_PROMPT.replace('{NOW}', now.strftime('%A %d %B %Y, %H:%M'))
               .replace('{NUMBERS}', nums).replace('{STORIES}', stories_text))
-    key = 'editor|' + sha(bucket, *[s['headline'] for s in pool[:10]])
+    key = 'editor|' + sha(PROMPT_VERSION, bucket, *[s['headline'] for s in pool[:10]])
     data = g.ask('editor', prompt, key, stamp)
     if isinstance(data, dict):
         source = nums + '\n' + stories_text
@@ -309,41 +385,48 @@ def run(g, stories, plan, tables, now):
             out['questions'] = [q.strip() for q in qs
                                 if isinstance(q, str) and q.strip() and numbers_ok(q, source)][:3]
 
-    # ---- 2. article summaries + deal cards for the lead story and top deals
+    # ---- 2. summaries + deal cards for the lead story and top deals (cached per article)
     picks, seen = [], set()
     for s in ([plan['lead']] if plan['lead'] else []) + plan['top_deals']:
         if s['url'] not in seen and len(picks) < C.AI_ARTICLES_MAX:
             seen.add(s['url'])
             picks.append(s)
-    if picks:
+    deal_ids = {s['id'] for s in plan['top_deals']}
+    need, akeys = [], {}
+    for s in picks:
+        akeys[s['id']] = 'art|' + sha(PROMPT_VERSION, s['url'], 'D' if s['id'] in deal_ids else 'N')
+        hit = g.cache_get(akeys[s['id']])
+        if hit is None:
+            need.append(s)
+        else:
+            if hit.get('summary'):
+                out['summaries'][s['id']] = hit['summary']
+            if hit.get('deal'):
+                out['deals'][s['id']] = hit['deal']
+    if need:
         with ThreadPoolExecutor(max_workers=4) as pool_:
-            texts = list(pool_.map(lambda s: fetch_article_text(s['url'], C.AI_ARTICLE_CHARS), picks))
+            texts = list(pool_.map(lambda s: fetch_article_text(s['url'], C.AI_ARTICLE_CHARS), need))
         sources, blocks = {}, []
-        deal_ids = {s['id'] for s in plan['top_deals']}
-        for s, body in zip(picks, texts):
+        for s, body in zip(need, texts):
             text = f"{s['headline']}. {s['summary']} {body}".strip()
             sources[s['id']] = text
             tag = ' DEAL' if s['id'] in deal_ids else ''
             blocks.append(f"[id={s['id']}]{tag}\nHeadline: {s['headline']}\nText: {text[:C.AI_ARTICLE_CHARS + 400]}")
         prompt = ARTICLES_PROMPT.replace('{ARTICLES}', '\n\n'.join(blocks))
         data = g.ask('articles', prompt, 'articles|' + sha(prompt), stamp)
-        items = data.get('items') if isinstance(data, dict) else None
-        for it in items if isinstance(items, list) else []:
-            try:
-                sid = int(it.get('id'))
-            except (TypeError, ValueError):
-                continue
+        for it in _items(data):
+            sid = _sid(it)
             src = sources.get(sid)
             if src is None:
                 continue
+            res = {'summary': '', 'deal': None}
             summ = it.get('summary')
             if isinstance(summ, str) and summ.strip() and numbers_ok(summ, src):
-                out['summaries'][sid] = summ.strip()
+                res['summary'] = summ.strip()
             d = it.get('deal')
             if sid in deal_ids and isinstance(d, dict):
-                why = d.get('why_it_matters')
-                watch = d.get('what_to_watch')
-                out['deals'][sid] = {
+                why, watch = d.get('why_it_matters'), d.get('what_to_watch')
+                res['deal'] = {
                     'Target': names_ok(d.get('target'), src),
                     'Buyer / investor': names_ok(d.get('buyer_or_investor'), src),
                     'Seller': names_ok(d.get('seller'), src),
@@ -356,29 +439,80 @@ def run(g, stories, plan, tables, now):
                     '_why': why.strip() if isinstance(why, str) and numbers_ok(why, src) else '',
                     '_watch': watch.strip() if isinstance(watch, str) and numbers_ok(watch, src) else '',
                 }
+            g.put(akeys[sid], res)
+            if res['summary']:
+                out['summaries'][sid] = res['summary']
+            if res['deal']:
+                out['deals'][sid] = res['deal']
 
-    # ---- 3. earnings table
-    if plan['earnings']:
-        srcs = {s['id']: f"{s['headline']}. {s['summary']}" for s in plan['earnings']}
-        block = '\n\n'.join(f"[id={i}]\n{t}" for i, t in srcs.items())
-        prompt = EARNINGS_PROMPT.replace('{STORIES}', block)
-        data = g.ask('earnings', prompt, 'earnings|' + sha(prompt), stamp)
-        rows = data.get('rows') if isinstance(data, dict) else None
-        by_id = {s['id']: s for s in plan['earnings']}
-        for r in rows if isinstance(rows, list) else []:
-            try:
-                sid = int(r.get('id'))
-            except (TypeError, ValueError):
+    # ---- 3. story-specific "why it matters" for stories at or above the importance threshold
+    cand = sorted([s for s in stories if s['importance'] >= C.WHY_MIN_IMPORTANCE
+                   and not s['desk'].startswith('Trading Ideas')],
+                  key=lambda s: (s['importance'], s['published'] or far), reverse=True)[:C.AI_WHY_MAX]
+    missing, wkeys = [], {}
+    for s in cand:
+        wkeys[s['id']] = 'why|' + sha(PROMPT_VERSION, s['headline'], s['summary'][:300])
+        hit = g.cache_get(wkeys[s['id']])
+        if hit is None:
+            missing.append(s)
+        elif hit.get('why'):
+            out['whys'][s['id']] = hit['why']
+    if missing:
+        block = '\n\n'.join(f"[id={s['id']}] {s['desk']}\nHeadline: {s['headline']}\nSummary: {s['summary'][:400]}"
+                             for s in missing)
+        data = g.ask('why', WHY_PROMPT.replace('{STORIES}', block), 'whybatch|' + sha(block), stamp)
+        by_id = {s['id']: s for s in missing}
+        for it in _items(data):
+            sid = _sid(it)
+            s = by_id.get(sid)
+            if s is None:
                 continue
-            if sid not in srcs:
-                continue
-            row = {'company': plain(r.get('company'), 60), 'period': plain(r.get('period'), 20),
-                   'revenue': grounded(r.get('revenue_growth'), srcs[sid]),
-                   'profit': grounded(r.get('profit_growth'), srcs[sid]),
-                   'margin': grounded(r.get('margin'), srcs[sid]),
-                   'driver': plain(r.get('driver'), 100),
-                   'url': by_id[sid]['url']}
-            if row['company'] != 'Not disclosed' and any(
-                    row[k] != 'Not disclosed' for k in ('revenue', 'profit', 'margin')):
-                out['rows'].append(row)
+            text = it.get('why')
+            ok = (isinstance(text, str) and text.strip() and len(text) <= 300
+                  and numbers_ok(text, f"{s['headline']}. {s['summary']}"))
+            g.put(wkeys[sid], {'why': text.strip() if ok else ''})
+            if ok:
+                out['whys'][sid] = text.strip()
+
+    # ---- 4. earnings table and cards (cached per story)
+    ear = plan['earnings']
+    if ear:
+        results, need = {}, []
+        for i, s in enumerate(ear):
+            ekey = 'earn|' + sha(PROMPT_VERSION, s['url'], 'C' if i < C.EARNINGS_CARDS else 'T')
+            hit = g.cache_get(ekey)
+            if hit is None:
+                need.append((i, s, ekey))
+            elif hit.get('row'):
+                results[s['id']] = hit['row']
+        if need:
+            full = [s for i, s, _ in need if i < C.EARNINGS_CARDS]
+            with ThreadPoolExecutor(max_workers=3) as pool_:
+                bodies = dict(zip([s['id'] for s in full],
+                                  pool_.map(lambda s: fetch_article_text(s['url'], C.AI_ARTICLE_CHARS), full)))
+            srcs = {s['id']: f"{s['headline']}. {s['summary']} {bodies.get(s['id'], '')}".strip() for _, s, _ in need}
+            block = '\n\n'.join(f"[id={sid}]\n{t[:C.AI_ARTICLE_CHARS + 400]}" for sid, t in srcs.items())
+            data = g.ask('earnings', EARNINGS_PROMPT.replace('{STORIES}', block), 'earnbatch|' + sha(block), stamp)
+            meta = {s['id']: (i, s, ekey) for i, s, ekey in need}
+            rows = data.get('rows') if isinstance(data, dict) else None
+            for r in rows if isinstance(rows, list) else []:
+                sid = _sid(r)
+                if sid not in meta:
+                    continue
+                i, s, ekey = meta[sid]
+                src = srcs[sid]
+                f = lambda k: grounded(r.get(k), src)
+                t = lambda k, n=120: textfield(r.get(k), src, n)
+                row = {'company': plain(r.get('company'), 60), 'period': plain(r.get('period'), 20),
+                       'result': t('result', 30), 'revenue': f('revenue_growth'), 'ebitda': f('ebitda'),
+                       'profit': f('profit_growth'), 'margin': f('margin'), 'net_debt': f('net_debt'),
+                       'key_positive': t('key_positive'), 'key_negative': t('key_negative'),
+                       'broker_view': t('broker_view'), 'watch': t('what_to_watch'),
+                       'driver': t('driver', 100), 'url': s['url'], 'card': i < C.EARNINGS_CARDS}
+                usable = row['company'] != 'Not disclosed' and any(
+                    row[k] != 'Not disclosed' for k in ('revenue', 'ebitda', 'profit', 'margin'))
+                g.put(ekey, {'row': row if usable else None})
+                if usable:
+                    results[sid] = row
+        out['rows'] = [results[s['id']] for s in ear if s['id'] in results]
     return out
