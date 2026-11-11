@@ -237,6 +237,19 @@ def updown(v):
     return 'up' if v >= 0 else 'down'
 
 
+def lagging(tables):
+    """Names of indices whose last price is from an earlier day than the rest of their region (e.g. Sensex behind Nifty)."""
+    out = set()
+    for region in C.GLOBAL_INDICES:
+        rows = tables.get('Region: ' + region) or []
+        dates = [r[3] for r in rows]
+        if len(dates) < 2:
+            continue
+        mode = max(set(dates), key=dates.count)
+        out |= {r[0] for r in rows if r[3] != mode and r[3] != 'live'}
+    return out
+
+
 def find_quote(tables, name):
     for rows in tables.values():
         for r in rows:
@@ -319,12 +332,16 @@ def why_line(s, extras):
     """Mandatory for stories at or above the importance threshold: AI sentence if there is one, else the desk template."""
     if s['importance'] < C.WHY_MIN_IMPORTANCE:
         return ''
+    card = extras['deals'].get(s['id'])
+    if card and card.get('_why'):
+        return ''                                   # the deal card already carries a story-specific line
     ai_text = extras['whys'].get(s['id'])
     text = ai_text or s['why']
     if not text:
         return ''
-    badge = '<span class="ai">AI</span>' if ai_text else ''
-    return f'<div class="why"><b>Why it matters:</b> {esc(text)}{badge}</div>'
+    if ai_text:
+        return f'<div class="why"><b>Why it matters:</b> {esc(ai_text)}<span class="ai">AI</span></div>'
+    return f'<div class="why"><b>Context:</b> {esc(text)}</div>'      # a general desk note, not story-specific
 
 
 def deal_card(card):
@@ -393,6 +410,7 @@ def pct_cell(v):
 
 def index_board(tables):
     today = datetime.now(IST).date()
+    behind = lagging(tables)
     rows = ''
     for region, members in C.GLOBAL_INDICES.items():
         data = tables.get('Region: ' + region)
@@ -402,6 +420,8 @@ def index_board(tables):
         rows += f'<tr class="region"><td colspan="6">{esc(region)}</td></tr>'
         for name, last, day, asof, week, ytd, *_ in sorted(data, key=lambda r: order.index(r[0])):
             label, cls = asof_label(asof, today)
+            if name in behind and not cls:
+                label, cls = f'{asof} · behind', 'stale'
             rows += (f'<tr><td>{esc(name)}</td><td class="num">{last:,.2f}</td>{pct_cell(day)}{pct_cell(week)}'
                      f'{pct_cell(ytd)}<td class="day {cls}">{esc(label)}</td></tr>')
     if not rows:
@@ -410,7 +430,8 @@ def index_board(tables):
             '<td class="num">YTD</td><td class="day">As of</td></tr>')
     return (f'<div class="label">Global indices</div><div class="scroll"><table>{head}{rows}</table></div>'
             '<p class="note">"live" = the market has traded today, so the price can be delayed intraday rather than a close. '
-            'A date is that market\'s last close (each market\'s own trading day). "stale" = last price is over 4 days old: '
+            'A date is that market\'s last close (each market\'s own trading day). "behind" = this index\'s data is from an earlier '
+            'day than the rest of its region, so do not compare it with them. "stale" = last price is over 4 days old: '
             'a holiday or a data problem. MSCI rows use tracking ETFs.</p>')
 
 
@@ -548,8 +569,10 @@ def deal_log_html(rows):
 
 # ---------------------------------------------------------------- sidebar pieces
 def rule_read(tables):
+    behind = lagging(tables)
+
     def fmt(names):
-        return ', '.join(f'{nm} {pct(r[2])}' for nm in names if (r := find_quote(tables, nm)))
+        return ', '.join(f'{nm} {pct(r[2])}' for nm in names if nm not in behind and (r := find_quote(tables, nm)))
     lines = []
     secs = sorted(tables.get('Sectors', []), key=lambda r: r[2], reverse=True)
     india = fmt(['Nifty 50', 'Sensex', 'Nifty Bank', 'Nifty IT'])
@@ -622,19 +645,24 @@ def top5_html(plan, tables, stories):
         mood = 'Global risk-on' if up == len(keyidx) else 'Global risk-off' if up == 0 else 'Global markets mixed'
         top = sorted(keyidx, key=lambda r: abs(r[2]), reverse=True)[:3]
         items.append(f'{esc(mood)}: ' + ', '.join(f'{esc(r[0])} {pct(r[2])}' for r in top) + '.')
-    cr = find_quote(tables, 'Brent crude ($)')
-    y = find_quote(tables, 'US 10Y yield (%)')
     bits = []
-    if cr:
-        bits.append(f'Brent crude {"fell" if cr[2] < 0 else "rose"} {abs(cr[2]):.1f}% to ${cr[1]:.2f}')
+    for nm, label, fmtv in [('Brent crude ($)', 'Brent crude', '${:,.2f}'), ('Gold ($/oz)', 'Gold', '${:,.0f}'),
+                            ('USD/INR', 'USD/INR', '{:.2f}'), ('Dollar index', 'Dollar index', '{:.2f}')]:
+        r = find_quote(tables, nm)
+        if r and abs(r[2]) >= 0.5:
+            bits.append((abs(r[2]), f'{label} {pct(r[2])} to {fmtv.format(r[1])}'))
+    y = find_quote(tables, 'US 10Y yield (%)')
     if y:
-        bits.append(f'US 10Y yield {y[1]:.2f}% ({chg("US 10Y yield (%)", y[1], y[2])})')
+        bps = float(chg('US 10Y yield (%)', y[1], y[2]).split()[0])
+        if abs(bps) >= 5:
+            bits.append((99, f'US 10Y yield {y[1]:.2f}% ({bps:+.0f} bps)'))
+    bits = [t for _, t in sorted(bits, reverse=True)[:3]]
     if bits:
-        items.append('Commodities and rates: ' + '; '.join(bits) + '.')
+        items.append('Commodities, FX and rates: ' + '; '.join(bits) + '.')
     n, sx = find_quote(tables, 'Nifty 50'), find_quote(tables, 'Sensex')
     secs = sorted(tables.get('Sectors', []), key=lambda r: r[2], reverse=True)
     if n:
-        t = f'India: Nifty {pct(n[2])}' + (f', Sensex {pct(sx[2])}' if sx else '')
+        t = f'India: Nifty {pct(n[2])}' + (f', Sensex {pct(sx[2])}' if sx and 'Sensex' not in lagging(tables) else '')
         if len(secs) >= 2:
             t += f'; {secs[0][0]} led ({pct(secs[0][2])}), {secs[-1][0]} lagged ({pct(secs[-1][2])})'
         items.append(esc(t) + '.')
@@ -666,6 +694,8 @@ def data_quality_html(tables, plan, extras, failed_n):
             if asof_label(r[3], today)[1] == 'stale':
                 stale += 1
     conflicts = len(plan.get('conflicts') or [])
+    behind = len(lagging(tables))
+    stale += behind
     if expected and loaded >= 0.9 * expected and stale == 0 and failed_n <= 2:
         grade = 'Good'
     elif expected and loaded >= 0.7 * expected and stale <= 2:
@@ -673,7 +703,7 @@ def data_quality_html(tables, plan, extras, failed_n):
     else:
         grade = 'Check'
     ai = {'ok': 'Gemini: ok', 'cached': 'Gemini: from cache', 'partial': 'Gemini: partial success'}.get(extras.get('ai_state'), '')
-    parts = [f'{loaded} of {expected} indices loaded', f'{conflicts} conflict(s) flagged', f'{stale} stale price(s)',
+    parts = [f'{loaded} of {expected} indices loaded', f'{conflicts} conflict(s) flagged', f'{stale} stale or lagging price(s)',
              f'{failed_n} feed(s) failed'] + ([ai] if ai else [])
     cls = 'up' if grade == 'Good' else 'stale' if grade == 'Fair' else 'down'
     return (f'<p class="note"><b>Data quality: <span class="{cls}">{grade}</span></b> · ' + ' · '.join(esc(p) for p in parts) + '</p>')
@@ -683,8 +713,13 @@ def deep_dive_html(plan, extras):
     deals = plan['top_deals']
     if not deals:
         return ''
-    s = deals[0]
+    pe = [d for d in deals if d['desk'] in ('M&A & Investment Banking', 'LBO, Growth & Secondary Buyouts',
+                                            'PE Fundraising & Dry Powder')]
+    s = (pe or deals)[0]                           # a PE / M&A deal is the better study case when there is one
     card = extras['deals'].get(s['id'])
+    if not card or not card.get('Strategic logic'):
+        s = deals[0]
+        card = extras['deals'].get(s['id'])
     if not card or not card.get('Strategic logic'):
         return ''
     rows = [('Deal', f'{card["Buyer / investor"]} → {card["Target"]}'), ('Structure', card.get('Structure')),
@@ -800,7 +835,7 @@ def insights_html(ins, extras):
     return out + deal_log_html(extras.get('deal_log') or [])
 
 
-def concall_html(extras):
+def concall_html(extras, roundups=()):
     from learn import auto_links
     cc = extras.get('concall') or {'today': [], 'week': [], 'all': []}
 
@@ -820,6 +855,9 @@ def concall_html(extras):
                 f'<th>Links</th><th>Guidance</th><th>Capex</th><th>Key risks</th></tr>{body}</table></div>')
 
     out = table('Reporting today', cc['today']) + table('Reporting in the next 7 days', cc['week'])
+    if roundups:
+        out += ('<div class="label">Results-day roundups in the news</div><ul class="briefs">'
+                + ''.join(brief_li(s) for s in roundups) + '</ul>')
     out += ('<p class="note">These two tables come from <b>data/concall_links.csv</b>, which you fill in by hand '
             '(company, quarter, results_date, links, guidance, capex, key_risks). No free feed gives results dates or transcript links.</p>')
     cards = ''
@@ -925,7 +963,8 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
         desk(n) for n in ('Central Banks & Policy', 'Macro Indicators', 'Market Pulse & Global Cues')) + '</div>')
 
     # --- study + low priority
-    concall = block('concall', 'Management & concall watch', concall_html(extras))
+    roundups = [s for s in stories if has(s['headline'].lower(), ['results today', 'q2 results today', 'q3 results today'])][:3]
+    concall = block('concall', 'Management & concall watch', concall_html(extras, roundups))
     private = block('private', 'Private markets intelligence', insights_html(extras.get('insights'), extras))
     logic = block('logic', 'Finance logic & market structure', logic_html(extras, by_desk, shown))
     study = block('study', 'Study desk', study_html(stories, plan, extras) + deep_read_html(plan, extras, now.strftime('%Y-%m-%d')))
@@ -946,7 +985,9 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
         foot += '<!-- ' + esc(debug).replace('--', '- -') + ' -->'
 
     body = front_html + markets + deals + companies + concall + private + logic + policy + study + low_html
-    words = len(re.sub(r'<[^>]+>', ' ', body).split())
+    prose = re.sub(r'<table.*?</table>|<details class="more">.*?</details>|<details id="(?:markets|study)".*?</details>',
+                   ' ', body, flags=re.S)
+    words = len(re.sub(r'<[^>]+>', ' ', prose).split())
     minutes = max(1, round(words / 230))
 
     date_long = now.strftime('%A, ') + str(now.day) + now.strftime(' %B %Y')

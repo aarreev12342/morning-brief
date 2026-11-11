@@ -48,7 +48,10 @@ def grounded(value, source):
     """A figure the article states, or 'Not disclosed'."""
     if value is None or str(value).strip().lower() in NOT_STATED:
         return 'Not disclosed'
-    value = str(value).strip()[:140]
+    value = str(value).strip()
+    if len(value) > 90:
+        value = value.split(' (')[0].strip()      # keep the headline figure, drop long bracketed asides
+    value = value[:140]
     return value if numbers_ok(value, source, strict=True) else 'Not disclosed'
 
 

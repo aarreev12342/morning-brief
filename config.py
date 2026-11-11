@@ -27,7 +27,7 @@ MAX_PER_RADAR_CATEGORY = 6
 MAX_PER_DESK = 5
 DESK_CAPS = {'Market Pulse & Global Cues': 4}   # per-desk override of MAX_PER_DESK
 # Stock-news desks are decided by the headline only (summaries often mention 'upgrades' etc. in passing).
-SUMMARY_PASS_SKIP = {'Finance Logic & Market Structure', 'Companies & Earnings', 'Companies & Strategy', 'Broker Calls & Stock Movers', 'Corporate Actions',
+SUMMARY_PASS_SKIP = {'Private Credit & Distressed Debt', 'Finance Logic & Market Structure', 'Companies & Earnings', 'Companies & Strategy', 'Broker Calls & Stock Movers', 'Corporate Actions',
                      'Trading Ideas (low priority)'}
 AI_MAX_STORIES = 4         # how many top stories get Gemini-written concepts
 GEMINI_MODEL = 'gemini-3.8-flash'   # change here if Google renames the model
@@ -112,6 +112,10 @@ DROP_HEADLINE_WORDS = ["here's how", 'banks open or closed', 'bank holiday', 'we
 # Headlines are checked first (more reliable); only if nothing matches does it look at the
 # longer summary text (and the Earnings desk is skipped in that second pass).
 DESK_RULES = [
+    ('Market Pulse & Global Cues', None, ['global market today', 'asian stocks', 'global equities', 'results today',
+        'q2 results today', 'q3 results today', 'q1 results today', 'q4 results today', "mutual funds' nifty",
+        '& more'], True),
+    ('Companies & Earnings', None, ['steep losses', 'posts loss', 'posts losses', 'net loss widens'], True),
     ('Finance Logic & Market Structure', None, ['market structure', 'securities law', 'insider trading', 'short seller',
         'short-seller', 'spac', 'tokenised', 'tokenized', 'clearing corporation', 'settlement cycle', 'circuit breaker',
         'index inclusion', 'margin rules', 'sec charges', 'sec sues'], True),

@@ -39,7 +39,7 @@ def parse_date(raw):
             d = datetime.fromisoformat(raw.replace('Z', '+00:00'))
         except ValueError:
             return None
-    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    return d if d.tzinfo else d.replace(tzinfo=IST)     # feeds without a zone (e.g. RBI) are in Indian time
 
 
 def fetch_feed(item):
@@ -70,6 +70,8 @@ def fetch_feed(item):
         summary = clean_text(desc_el.text if desc_el is not None else '')
         date_el = get('pubDate') if get('pubDate') is not None else get('published')
         published = parse_date(date_el.text if date_el is not None else '')
+        if published and published > datetime.now(timezone.utc) + timedelta(minutes=5):
+            published = datetime.now(timezone.utc)      # a time in the future is a feed error: show as 'just now'
         if title and link:
             articles.append({'headline': title, 'url': link, 'source': name,
                              'summary': summary, 'published': published})
