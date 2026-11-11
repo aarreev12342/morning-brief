@@ -112,7 +112,7 @@ def fetch_article_text(url, limit):
 
 
 # ---------------------------------------------------------------- Gemini client
-PROMPT_VERSION = 'v5'
+PROMPT_VERSION = 'v7'
 TRANSIENT = ('503', '429', '500', '502', '504', 'unavailable', 'resource_exhausted', 'overloaded',
              'timed out', 'timeout', 'deadline')
 
@@ -246,6 +246,14 @@ class Gemini:
             return 'Some AI-written sections are unavailable right now, so article summaries are shown instead.'
         return ''
 
+    def state(self):
+        """'off', 'ok', 'partial' (some calls failed) or 'cached' (everything came from the cache)."""
+        if not self.ok:
+            return 'off'
+        if self.errors:
+            return 'partial'
+        return 'cached' if self.calls == 0 and self.cached else 'ok'
+
     status_note = detail
 
 
@@ -284,8 +292,10 @@ ARTICLES_PROMPT = RULES + '''
 
 For EVERY article below return "summary": 2 to 3 sentences on what happened.
 For articles marked DEAL also return "deal" with these keys: target, buyer_or_investor, seller, deal_type,
-value, stake, valuation, financing, advisors, why_it_matters (1-2 sentences using only facts in the text),
-what_to_watch (1 sentence). For other articles set "deal" to null.
+value, stake, valuation, financing, advisors, structure (e.g. primary capital, secondary sale, control or minority),
+total_fundraise, promoter_participation, use_of_proceeds, exit_route (only if the text names one), strategic_logic (1 sentence), key_risks (1 sentence), pe_ib_angle (minority
+growth equity, control buyout, strategic acquisition, etc. - say only if the text supports it),
+why_it_matters (1-2 sentences using only facts in the text), what_to_watch (1 sentence). For other articles set "deal" to null.
 
 Return JSON: {"items": [{"id": 0, "summary": "...", "deal": null}]}
 
@@ -296,7 +306,13 @@ ARTICLES:
 WHY_PROMPT = RULES + '''
 
 For each story below write ONE sentence (at most 30 words) on why it matters to an investor: what changed, who gains
-or loses, or what to watch next. Be specific to this story, not generic. Use ONLY facts in its headline and summary.
+or loses, or what to watch next. Be specific to this story, not generic. Match the story type:
+M&A or investment: buyer, target, consideration, strategic logic, financing, integration risk.
+IPO: fresh issue vs offer for sale, use of proceeds, valuation, listing risk (only if the text says which).
+Regulatory approval: the parties, stake, approval status, conditions, timeline.
+RBI or central bank release: the policy lever, liquidity impact, who is affected.
+Marketing, sponsorship or branding: cost against benefit, not capital raising.
+Never describe a story with a template that does not fit it. Use ONLY facts in its headline and summary.
 If the text is too thin to say anything specific, return an empty string for that story.
 
 Return JSON: {"items": [{"id": 0, "why": "..."}]}
@@ -317,15 +333,67 @@ net_debt: net debt or net debt/EBITDA ONLY if stated, else "n/a",
 key_positive, key_negative: one short phrase each from the text, else "n/a",
 broker_view: what brokerages say, ONLY if stated, else "n/a",
 what_to_watch: one short phrase of what the text says to watch next, else "n/a",
-driver: a short phrase from the text on why results moved, else "n/a".
+driver: a short phrase from the text on why results moved, else "n/a",
+guidance: management guidance for coming quarters or the year, ONLY if stated, else "n/a",
+capex: capital expenditure plans, ONLY if stated, else "n/a",
+growth_drivers: what management says will drive growth, ONLY if stated, else "n/a",
+risks: risks the text mentions, else "n/a",
+analyst_questions: what analysts asked or worried about, ONLY if the text reports it, else "n/a",
+tone: management tone (confident, cautious...), ONLY if the text describes it, else "n/a",
+vs_last: what changed versus the previous quarter, ONLY if stated, else "n/a".
+Do not invent guidance or financials.
 
 Return JSON: {"rows": [{"id": 0, "company": "...", "period": "...", "result": "n/a", "revenue_growth": "n/a",
 "profit_growth": "+5%", "ebitda": "n/a", "margin": "n/a", "net_debt": "n/a", "key_positive": "n/a",
-"key_negative": "n/a", "broker_view": "n/a", "what_to_watch": "n/a", "driver": "n/a"}]}
+"key_negative": "n/a", "broker_view": "n/a", "what_to_watch": "n/a", "driver": "n/a", "guidance": "n/a",
+"capex": "n/a", "growth_drivers": "n/a", "risks": "n/a", "analyst_questions": "n/a", "tone": "n/a", "vs_last": "n/a"}]}
 
 STORIES:
 {STORIES}
 '''
+
+
+MONEY_PROMPT = RULES + '''
+
+Below is a Money Stuff column (Bloomberg Opinion, by Matt Levine). The text may be only a headline and a short summary
+because the full column is behind a paywall: use ONLY what is given.
+Explain the financial mechanism in under 120 words. Identify the PE/IB lesson and one research question.
+Do not invent numbers. If the text is too thin to explain a mechanism, set "mechanism" to "Not disclosed".
+
+Return JSON: {"story": "the main story in one line", "mechanism": "...", "why_it_matters": "one sentence",
+"pe_ib_takeaway": "one sentence", "question": "one research question"}
+
+TEXT:
+{TEXT}
+'''
+
+
+def run_learn(g, ms, now):
+    """Money Stuff card for the one newest column. Returns a dict, or None (the page then shows the RSS summary)."""
+    if not ms:
+        return None
+    key = 'money|' + sha(PROMPT_VERSION, ms['url'])
+    hit = g.cache_get(key)
+    if hit is None:
+        if not g.ok:
+            return None
+        body = ''
+        try:
+            body = run_with_timeout(fetch_article_text, 20, ms['url'], C.AI_ARTICLE_CHARS)
+        except Exception:
+            pass
+        text = f"{ms['headline']}. {ms['summary']} {body}".strip()
+        data = g.ask('money stuff', MONEY_PROMPT.replace('{TEXT}', text[:C.AI_ARTICLE_CHARS + 400]), 'moneyraw|' + sha(text),
+                     now.strftime('%H:%M'))
+        if not isinstance(data, dict):
+            return None
+        def tf(k, n):
+            v = plain(data.get(k), n)
+            return v if v == 'Not disclosed' or numbers_ok(v, text) else 'Not disclosed'
+        hit = {'story': tf('story', 160), 'mechanism': tf('mechanism', 900), 'why_it_matters': tf('why_it_matters', 300),
+               'pe_ib_takeaway': tf('pe_ib_takeaway', 300), 'question': tf('question', 250)}
+        g.put(key, hit)
+    return hit if hit.get('mechanism') not in (None, 'Not disclosed') or hit.get('story') != 'Not disclosed' else None
 
 
 def numbers_text(tables):
@@ -436,6 +504,14 @@ def run(g, stories, plan, tables, now):
                     'Valuation': grounded(d.get('valuation'), src),
                     'Financing': grounded(d.get('financing'), src),
                     'Advisors': plain(d.get('advisors')),
+                    'Structure': textfield(d.get('structure'), src),
+                    'Total fundraise': grounded(d.get('total_fundraise'), src),
+                    'Promoter participation': grounded(d.get('promoter_participation'), src),
+                    'Use of proceeds': textfield(d.get('use_of_proceeds'), src, 160),
+                    'Exit route': textfield(d.get('exit_route'), src, 120),
+                    'Strategic logic': textfield(d.get('strategic_logic'), src, 200),
+                    'Key risks': textfield(d.get('key_risks'), src, 200),
+                    'PE / IB angle': textfield(d.get('pe_ib_angle'), src, 160),
                     '_why': why.strip() if isinstance(why, str) and numbers_ok(why, src) else '',
                     '_watch': watch.strip() if isinstance(watch, str) and numbers_ok(watch, src) else '',
                 }
@@ -508,7 +584,10 @@ def run(g, stories, plan, tables, now):
                        'profit': f('profit_growth'), 'margin': f('margin'), 'net_debt': f('net_debt'),
                        'key_positive': t('key_positive'), 'key_negative': t('key_negative'),
                        'broker_view': t('broker_view'), 'watch': t('what_to_watch'),
-                       'driver': t('driver', 100), 'url': s['url'], 'card': i < C.EARNINGS_CARDS}
+                       'driver': t('driver', 100), 'guidance': t('guidance', 160), 'capex': t('capex', 140),
+                       'growth_drivers': t('growth_drivers', 160), 'risks': t('risks', 160),
+                       'analyst_questions': t('analyst_questions', 160), 'tone': t('tone', 60),
+                       'vs_last': t('vs_last', 160), 'url': s['url'], 'card': i < C.EARNINGS_CARDS}
                 usable = row['company'] != 'Not disclosed' and any(
                     row[k] != 'Not disclosed' for k in ('revenue', 'ebitda', 'profit', 'margin'))
                 g.put(ekey, {'row': row if usable else None})

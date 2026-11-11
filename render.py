@@ -186,6 +186,11 @@ SCRIPT = """
     saved = saved.slice(0, 60); store(saved); render(); mark();
   });
   render(); mark();
+  Array.prototype.forEach.call(document.querySelectorAll('textarea[data-k]'), function(t){
+    var k = 'mb_' + t.getAttribute('data-k');
+    try { t.value = localStorage.getItem(k) || ''; } catch (e) {}
+    t.addEventListener('input', function(){ try { localStorage.setItem(k, t.value); } catch (e) {} });
+  });
 })();
 """
 
@@ -218,6 +223,14 @@ def clock(dt, today):
 
 def pct(v):
     return f'{v:+.2f}%'
+
+
+def chg(name, last, change):
+    """Yields move in basis points (1 bp = 0.01 percentage point); everything else in percent."""
+    if name in C.YIELD_NAMES and change is not None:
+        prev = last / (1 + change / 100)
+        return f'{(last - prev) * 100:+.0f} bps'
+    return pct(change)
 
 
 def updown(v):
@@ -254,8 +267,10 @@ def link(s, cls=''):
 
 def tier_of(s):
     if s['desk'].startswith('Trading Ideas'):
-        return 'Trading idea'
-    return C.SOURCE_TIERS.get(s['source'], '')
+        return 'Low priority'
+    if s['desk'].startswith('Finance Logic'):
+        return 'Market structure'
+    return C.SOURCE_TIERS.get(s['source'], C.DEFAULT_TIER)
 
 
 def meta_line(s, stage=False):
@@ -408,7 +423,7 @@ def quote_table(title, rows):
         arrow = '▲' if change >= 0 else '▼'
         label, cls = asof_label(day, today)
         body += (f'<tr><td>{esc(name)}</td><td class="num">{last:,.2f}</td>'
-                 f'<td class="num {updown(change)}">{arrow} {change:+.2f}%</td><td class="day {cls}">{esc(label)}</td></tr>')
+                 f'<td class="num {updown(change)}">{arrow} {chg(name, last, change)}</td><td class="day {cls}">{esc(label)}</td></tr>')
     return f'<div class="label">{esc(title)}</div><div class="scroll"><table>{body}</table></div>'
 
 
@@ -429,10 +444,13 @@ def watchlist_table(tables, stories):
     for name, last, change, asof, week, ytd, *rest in rows:
         hi, lo = (rest + [None, None])[:2]
         label, cls = asof_label(asof, today)
+        sym = C.WATCHLIST.get(name, '')
+        cur = '₹' if sym.endswith(('.NS', '.BO')) else ''
         rng = '—'
         if hi and lo and hi > lo:
             pos = max(0, min(100, (last - lo) / (hi - lo) * 100))
-            rng = (f'{lo:,.0f}<span class="rng"><i style="left:{pos:.0f}%"></i></span>{hi:,.0f}'
+            rng = (f'{cur}{lo:,.0f} – {cur}{hi:,.0f}'
+                   f'<div><span class="rng" style="margin:4px 0 0"><i style="left:{pos:.0f}%"></i></span></div>'
                    f'<div class="meta">{(last / hi - 1) * 100:+.1f}% vs 52-wk high</div>')
         names = C.WATCHLIST_ALIASES.get(name, [name.lower()])
         hits = sorted([s for s in stories if has(s['headline'].lower(), names)],
@@ -447,7 +465,7 @@ def watchlist_table(tables, stories):
         if note.get('thesis'):
             watching += f'<div class="meta">Thesis: {esc(note["thesis"])}</div>'
         body += (f'<tr><td><b>{esc(name)}</b><div class="meta {cls}">{esc(label)}</div></td>'
-                 f'<td class="num">{last:,.2f}</td><td class="num {updown(change)}">{change:+.2f}%</td>'
+                 f'<td class="num">{cur}{last:,.2f}</td><td class="num {updown(change)}">{change:+.2f}%</td>'
                  f'<td>{rng}</td><td>{news}</td><td>{badges}</td><td>{watching}</td></tr>')
     head = ('<tr><th>Stock</th><th class="num">Price</th><th class="num">Day</th><th>52-week range</th>'
             '<th>Latest headline</th><th>Alerts</th><th>Watching for</th></tr>')
@@ -553,7 +571,7 @@ def rule_read(tables):
                   ('India VIX', 'India VIX {:.2f}'), ('US VIX', 'US VIX {:.2f}')]:
         r = find_quote(tables, nm)
         if r:
-            lv.append(f.format(r[1]))
+            lv.append(f.format(r[1]) + (f' ({chg(nm, r[1], r[2])})' if nm in C.YIELD_NAMES else ''))
     if lv:
         lines.append('Levels: ' + ', '.join(lv) + '.')
     return lines
@@ -587,12 +605,32 @@ def ticker_html(tables):
         if r:
             arrow = '▲' if r[2] >= 0 else '▼'
             short = name.replace(' ($)', '').replace(' ($/oz)', '').replace(' (%)', '')
-            items.append(f'<span><b>{esc(short)}</b> {r[1]:,.2f} <span class="{updown(r[2])}">{arrow} {pct(r[2])}</span></span>')
+            items.append(f'<span><b>{esc(short)}</b> {r[1]:,.2f} <span class="{updown(r[2])}">{arrow} {chg(name, r[1], r[2])}</span></span>')
     return f'<div class="ticker">{"".join(items)}</div>' if items else ''
 
 
-def top5_html(plan, tables):
+def top5_html(plan, tables, stories):
+    """Five decision-oriented lines. Numbers come from the tables; no cause is stated unless a headline states it."""
     items = []
+    regions = []
+    for region in C.GLOBAL_INDICES:
+        if region != 'India' and 'ETF' not in region:
+            regions += tables.get('Region: ' + region, [])
+    keyidx = [r for r in regions if r[0] in ('S&P 500', 'Nasdaq Composite', 'Nikkei 225', 'DAX', 'Hang Seng')]
+    if keyidx:
+        up = sum(1 for r in keyidx if r[2] > 0)
+        mood = 'Global risk-on' if up == len(keyidx) else 'Global risk-off' if up == 0 else 'Global markets mixed'
+        top = sorted(keyidx, key=lambda r: abs(r[2]), reverse=True)[:3]
+        items.append(f'{esc(mood)}: ' + ', '.join(f'{esc(r[0])} {pct(r[2])}' for r in top) + '.')
+    cr = find_quote(tables, 'Brent crude ($)')
+    y = find_quote(tables, 'US 10Y yield (%)')
+    bits = []
+    if cr:
+        bits.append(f'Brent crude {"fell" if cr[2] < 0 else "rose"} {abs(cr[2]):.1f}% to ${cr[1]:.2f}')
+    if y:
+        bits.append(f'US 10Y yield {y[1]:.2f}% ({chg("US 10Y yield (%)", y[1], y[2])})')
+    if bits:
+        items.append('Commodities and rates: ' + '; '.join(bits) + '.')
     n, sx = find_quote(tables, 'Nifty 50'), find_quote(tables, 'Sensex')
     secs = sorted(tables.get('Sectors', []), key=lambda r: r[2], reverse=True)
     if n:
@@ -600,26 +638,63 @@ def top5_html(plan, tables):
         if len(secs) >= 2:
             t += f'; {secs[0][0]} led ({pct(secs[0][2])}), {secs[-1][0]} lagged ({pct(secs[-1][2])})'
         items.append(esc(t) + '.')
-    movers = []
-    for region in C.GLOBAL_INDICES:
-        if region != 'India' and 'ETF' not in region:
-            movers += tables.get('Region: ' + region, [])
-    big = sorted(movers, key=lambda r: abs(r[2]), reverse=True)[:2]
-    if big and abs(big[0][2]) >= 1:
-        items.append('Biggest global index moves: ' + ', '.join(f'{esc(r[0])} {pct(r[2])}' for r in big) + '.')
-    by_desk, deals = plan['by_desk'], plan['top_deals']
+    by_desk = plan['by_desk']
+    plain = lambda s: not has(s['headline'].lower(), C.PROMO_WORDS)
+    deals = [s for s in plan['top_deals'] if plain(s)] or plan['top_deals']
     if deals:
         items.append('Deal: ' + link(deals[0]))
-    ipos = [s for s in by_desk.get('IPOs & Block Deals', []) if s['how'] == 'head' and s not in deals]
-    if ipos:
-        items.append('IPO / block deal: ' + link(ipos[0]))
-    pol = sorted(by_desk.get('Central Banks & Policy', []) + by_desk.get('Macro Indicators', []),
-                 key=lambda s: s['importance'], reverse=True)
-    if pol:
-        items.append('Macro / policy: ' + link(pol[0]))
+    used = {s['url'] for s in deals[:1]}
+    pool = ([plan['lead']] if plan['lead'] else []) + plan['secondary'] \
+        + sorted(by_desk.get('Central Banks & Policy', []) + by_desk.get('Macro Indicators', [])
+                 + by_desk.get('IPOs & Block Deals', []), key=lambda s: s['importance'], reverse=True)
+    for s in pool:
+        if s['url'] not in used and plain(s) and s['importance'] >= 3:
+            items.append(f'{esc(s["desk"])}: ' + link(s))
+            break
     if not items:
         return ''
     return '<section class="top5"><h2>Top 5</h2><ol>' + ''.join(f'<li>{i}</li>' for i in items[:5]) + '</ol></section>'
+
+
+def data_quality_html(tables, plan, extras, failed_n):
+    expected = sum(len(m) for m in C.GLOBAL_INDICES.values())
+    loaded = sum(len(tables.get('Region: ' + r, [])) for r in C.GLOBAL_INDICES)
+    today = datetime.now(IST).date()
+    stale = 0
+    for title, rows in tables.items():
+        for r in rows:
+            if asof_label(r[3], today)[1] == 'stale':
+                stale += 1
+    conflicts = len(plan.get('conflicts') or [])
+    if expected and loaded >= 0.9 * expected and stale == 0 and failed_n <= 2:
+        grade = 'Good'
+    elif expected and loaded >= 0.7 * expected and stale <= 2:
+        grade = 'Fair'
+    else:
+        grade = 'Check'
+    ai = {'ok': 'Gemini: ok', 'cached': 'Gemini: from cache', 'partial': 'Gemini: partial success'}.get(extras.get('ai_state'), '')
+    parts = [f'{loaded} of {expected} indices loaded', f'{conflicts} conflict(s) flagged', f'{stale} stale price(s)',
+             f'{failed_n} feed(s) failed'] + ([ai] if ai else [])
+    cls = 'up' if grade == 'Good' else 'stale' if grade == 'Fair' else 'down'
+    return (f'<p class="note"><b>Data quality: <span class="{cls}">{grade}</span></b> · ' + ' · '.join(esc(p) for p in parts) + '</p>')
+
+
+def deep_dive_html(plan, extras):
+    deals = plan['top_deals']
+    if not deals:
+        return ''
+    s = deals[0]
+    card = extras['deals'].get(s['id'])
+    if not card or not card.get('Strategic logic'):
+        return ''
+    rows = [('Deal', f'{card["Buyer / investor"]} → {card["Target"]}'), ('Structure', card.get('Structure')),
+            ('Value', card['Value']), ('Stake', card['Stake']), ('Total fundraise', card.get('Total fundraise')),
+            ('Promoter participation', card.get('Promoter participation')), ('Strategic logic', card.get('Strategic logic')),
+            ('Valuation', card['Valuation']), ('Key risks', card.get('Key risks')), ('PE / IB angle', card.get('PE / IB angle'))]
+    dl = ''.join(f'<dt>{esc(k)}</dt><dd class="{"nd" if v == "Not disclosed" else ""}">{esc(v)}</dd>' for k, v in rows if v)
+    return (f'<div class="label">Top deal deep dive <span class="ai">AI · from the article</span></div>'
+            f'<div class="dealcard"><h4>{link(s)}</h4><dl>{dl}</dl>'
+            '<p class="note">"Not disclosed" means the article did not say. Read the exchange filing for terms.</p></div>')
 
 
 def watchlist_alerts_mini(stories):
@@ -673,6 +748,120 @@ def study_html(stories, plan, extras):
     return '<div class="study">' + ''.join(parts) + '</div>'
 
 
+# ---------------------------------------------------------------- learning layer blocks
+def logic_html(extras, by_desk, shown):
+    ms, card = extras.get('ms'), extras.get('money')
+    out = ''
+    if ms:
+        head = (f'<div class="label">Money Stuff, {esc(ms["published"].astimezone(IST).strftime("%d %B") if ms["published"] else "latest")}'
+                f' <span class="tier">Market structure</span></div>')
+        if card:
+            rows = [('Story', card['story']), ('Mechanism', card['mechanism']), ('Why it matters', card['why_it_matters']),
+                    ('PE/IB takeaway', card['pe_ib_takeaway']), ('Question to research', card['question'])]
+            dl = ''.join(f'<dt>{esc(k)}</dt><dd class="{"nd" if v == "Not disclosed" else ""}">{esc(v)}</dd>' for k, v in rows)
+            out += (f'{head}<div class="dealcard"><h4>{link(ms)} <span class="ai">AI · from the column text available</span></h4>'
+                    f'<dl>{dl}</dl><p class="note">The full column may be behind a paywall, so this card uses only the headline, '
+                    'summary and any text the page shared. Read the column itself for the detail.</p></div>')
+        else:
+            out += (f'{head}<div class="dealcard"><h4>{link(ms)}</h4><p>{esc(ms["summary"][:400])}</p>'
+                    '<p class="note">Summary from the feed. The AI card is unavailable right now.</p></div>')
+    else:
+        out += (f'<div class="label">Money Stuff</div><p class="note">Today\'s column did not load. Read it at '
+                f'<a href="{esc(C.MONEY_STUFF["page"])}" target="_blank" rel="noopener">Bloomberg Opinion</a>.</p>')
+    stories = [s for s in by_desk.get('Finance Logic & Market Structure', []) if s['url'] not in shown][:5]
+    if stories:
+        out += '<div class="label">More on how markets work</div><ul class="briefs">' + ''.join(brief_li(s) for s in stories) + '</ul>'
+    return out
+
+
+def insights_html(ins, extras):
+    if not ins or not ins['n']:
+        return ('<p class="note">The deal log is empty so far. It fills as deal stories are captured each run. '
+                'Full columns: <a href="pitchbook_style_deals.csv">pitchbook_style_deals.csv</a>.</p>')
+
+    def lst(title, rows, kind):
+        if not rows:
+            return f'<div class="desk"><div class="label">{esc(title)}</div><p class="note">None captured yet.</p></div>'
+        if kind == 'count':
+            lis = ''.join(f'<li><b>{esc(n)}</b> <span class="meta">{c} deal(s)</span></li>' for n, c in rows)
+        else:
+            lis = ''.join(f'<li><a class="t" href="{esc(safe(r.get("url", "")))}" target="_blank" rel="noopener">'
+                          f'{esc(r.get("headline", ""))}</a><div class="meta">{esc(r.get("value", "") or "value not stated")}'
+                          f'{" · " + esc(r["stake"]) if r.get("stake") else ""}</div></li>' for r in rows)
+        return f'<div class="desk"><div class="label">{esc(title)}</div><ul class="briefs">{lis}</ul></div>'
+
+    out = ('<div class="cols">' + lst('Top 5 deals by value', ins['top_value'], 'deal') + lst('Largest India deals', ins['india'], 'deal')
+           + lst('Most active sectors', ins['sectors'], 'count') + lst('Most active investors', ins['investors'], 'count')
+           + lst('IPO-bound companies', ins['ipo_bound'], 'deal') + lst('Recent exits', ins['exits'], 'deal') + '</div>')
+    note = ('Rankings use only values that state a unit (crore, billion...). Dollar values use today\'s USD/INR, so they are approximate. '
+            if ins['usd_note'] else 'Rankings use only rupee values that state a unit; dollar deals are left out because USD/INR did not load. ')
+    out += (f'<p class="note">{note}Sector and investor are read from the headline wording (investor) or keywords (sector); '
+            f'blank means unknown. {ins["n"]} deal(s) in the log. Download: <a href="pitchbook_style_deals.csv">pitchbook_style_deals.csv</a>.</p>')
+    return out + deal_log_html(extras.get('deal_log') or [])
+
+
+def concall_html(extras):
+    from learn import auto_links
+    cc = extras.get('concall') or {'today': [], 'week': [], 'all': []}
+
+    def links(r):
+        pairs = [('Release', 'earnings_release_url'), ('Presentation', 'presentation_url'),
+                 ('Transcript', 'transcript_url'), ('IR page', 'investor_relations_url')]
+        got = [f'<a href="{esc(safe(r[k]))}" target="_blank" rel="noopener">{lbl}</a>' for lbl, k in pairs if r.get(k, '').strip()]
+        return ' · '.join(got) or '<span class="nd">no links filled in</span>'
+
+    def table(title, rows):
+        if not rows:
+            return f'<div class="label">{esc(title)}</div><p class="note">None in your calendar.</p>'
+        body = ''.join(f'<tr><td><b>{esc(r["company"])}</b></td><td>{esc(r.get("quarter", ""))}</td>'
+                       f'<td>{esc(r.get("results_date", ""))}</td><td>{links(r)}</td><td>{esc(r.get("guidance", "") or "—")}</td>'
+                       f'<td>{esc(r.get("capex", "") or "—")}</td><td>{esc(r.get("key_risks", "") or "—")}</td></tr>' for r in rows)
+        return (f'<div class="label">{esc(title)}</div><div class="scroll"><table><tr><th>Company</th><th>Quarter</th><th>Date</th>'
+                f'<th>Links</th><th>Guidance</th><th>Capex</th><th>Key risks</th></tr>{body}</table></div>')
+
+    out = table('Reporting today', cc['today']) + table('Reporting in the next 7 days', cc['week'])
+    out += ('<p class="note">These two tables come from <b>data/concall_links.csv</b>, which you fill in by hand '
+            '(company, quarter, results_date, links, guidance, capex, key_risks). No free feed gives results dates or transcript links.</p>')
+    cards = ''
+    for r in [r for r in extras['rows'] if r.get('card')][:C.EARNINGS_CARDS]:
+        fields = [('Quarter', 'period'), ('Revenue', 'revenue'), ('Margin trend', 'margin'), ('Management guidance', 'guidance'),
+                  ('Key growth drivers', 'growth_drivers'), ('Capex plans', 'capex'), ('Risks', 'risks'),
+                  ('Analyst questions', 'analyst_questions'), ('Management tone', 'tone'), ('Changed vs last quarter', 'vs_last')]
+        dl = ''.join(f'<dt>{esc(lbl)}</dt><dd class="{"nd" if r.get(k) in (None, "Not disclosed") else ""}">{esc(r.get(k) or "Not disclosed")}</dd>'
+                     for lbl, k in fields)
+        tpl = C.RESEARCH_BY_DESK.get('Companies & Earnings', '').replace('{h}', r['company'])
+        al = ' · '.join(f'<a href="{esc(u)}" target="_blank" rel="noopener">{esc(n)}</a>' for n, u in auto_links(r['company']))
+        cards += (f'<div class="dealcard"><h4>Concall watch: {esc(r["company"])} <span class="ai">AI · only what the article reports</span></h4>'
+                  f'<dl>{dl}</dl><p><b>Find the documents:</b> {al}</p><p><b>Research question:</b> {esc(tpl)}</p></div>')
+    if cards:
+        out += ('<div class="label">Results in the news (last 48 hours)</div>'
+                f'<div class="cards3">{cards}</div><p class="note">News articles rarely quote the call itself, so many fields will say '
+                '"Not disclosed". For the real guidance, open the presentation and transcript through the links.</p>')
+    return out
+
+
+def deep_read_html(plan, extras, today_iso):
+    ms = extras.get('ms')
+    deals = plan['top_deals']
+    steps = []
+    steps.append('Read one Money Stuff story: ' + (link(ms) if ms else
+                 f'<a href="{esc(C.MONEY_STUFF["page"])}" target="_blank" rel="noopener">open the column</a>'))
+    steps.append('Read one deal story in full: ' + (link(deals[0]) if deals else 'pick one from Deals'))
+    cc = extras.get('concall') or {'all': []}
+    pres = next((r for r in cc['all'] if r.get('presentation_url', '').strip() or r.get('transcript_url', '').strip()), None)
+    if pres:
+        u = pres.get('presentation_url', '').strip() or pres.get('transcript_url', '').strip()
+        steps.append(f'Open one earnings presentation or transcript: <a href="{esc(safe(u))}" target="_blank" rel="noopener">{esc(pres["company"])}</a>')
+    else:
+        steps.append('Open one earnings presentation or concall transcript (see Concall watch for links)')
+    steps.append('Write one investment thesis in three lines:<br><textarea data-k="thesis_' + esc(today_iso) +
+                 '" rows="3" style="width:100%;font:15px Georgia,serif;background:var(--card);color:var(--ink);border:1px solid var(--rule)"></textarea>')
+    steps.append('Save one metric, multiple or management quote:<br><textarea data-k="notes" rows="2" '
+                 'style="width:100%;font:15px Georgia,serif;background:var(--card);color:var(--ink);border:1px solid var(--rule)"></textarea>')
+    return ('<div class="label">Today\'s 15-minute deep read</div><ol>' + ''.join(f'<li style="margin:6px 0">{x}</li>' for x in steps) +
+            '</ol><p class="note">Your thesis and notes are saved in this browser only.</p>')
+
+
 # ---------------------------------------------------------------- page
 def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
     today = now.date()
@@ -688,7 +877,7 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
         return desk_html(name, rest, extras, cap or C.DESK_CAPS.get(name, C.MAX_PER_DESK), stage)
 
     # --- front page
-    main_col = top5_html(plan, tables)
+    main_col = top5_html(plan, tables, stories)
     if lead:
         main_col += lead_html(lead, extras)
     if plan['secondary']:
@@ -704,7 +893,7 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
                     + watchlist_table(tables, stories) + conflicts_html(plan) + flows_html(plan) + macro_manual_html())
 
     # --- deals
-    deals_inner = ''
+    deals_inner = deep_dive_html(plan, extras)
     shown_deals = [s for s in plan['top_deals'] if s['url'] not in shown]
     if shown_deals:
         deals_inner += '<div class="label">Top deals</div><div class="grid2">' + ''.join(
@@ -725,19 +914,21 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
     deals_inner += f'<div class="cols">{desks_html}</div>'
     if not (shown_deals or radar or desks_html):
         deals_inner += '<p class="note">No further deal news beyond the front page right now.</p>'
-    deals_inner += deal_log_html(extras.get('deal_log') or [])
     deals = block('deals', 'Deals & capital markets', deals_inner)
 
     # --- companies
     companies = block('companies', 'Companies & stocks', earnings_html(extras['rows']) + '<div class="cols">' + ''.join(
-        desk(n) for n in ('Companies & Earnings', 'Broker Calls & Stock Movers', 'Corporate Actions')) + '</div>')
+        desk(n) for n in ('Companies & Earnings', 'Companies & Strategy', 'Broker Calls & Stock Movers', 'Corporate Actions')) + '</div>')
 
     # --- policy and world
     policy = block('policy', 'Economy, policy & world', '<div class="cols">' + ''.join(
         desk(n) for n in ('Central Banks & Policy', 'Macro Indicators', 'Market Pulse & Global Cues')) + '</div>')
 
     # --- study + low priority
-    study = block('study', 'Study desk', study_html(stories, plan, extras))
+    concall = block('concall', 'Management & concall watch', concall_html(extras))
+    private = block('private', 'Private markets intelligence', insights_html(extras.get('insights'), extras))
+    logic = block('logic', 'Finance logic & market structure', logic_html(extras, by_desk, shown))
+    study = block('study', 'Study desk', study_html(stories, plan, extras) + deep_read_html(plan, extras, now.strftime('%Y-%m-%d')))
     low = by_desk.get('Trading Ideas (low priority)', [])[:5]
     low_html = ''
     if low:
@@ -746,14 +937,15 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
 
     foot = ''.join(f'<p class="note">{esc(n)}</p>' for n in notes if n)
     foot += ('<p class="note">Every headline links to the original publisher. Parts marked AI were written by Gemini from the '
-             'article text; figures that were not in the text are removed. Badges: Primary = regulator release; Startup press = '
-             'trade publication; no badge = mainstream business press; Trading idea = low priority.</p>')
+             'article text; figures that were not in the text are removed. Badges: Primary = regulator, exchange or '
+             'company filing; News = mainstream business press; Startup press = trade publication; Market structure = Matt Levine / '
+             'Bloomberg Opinion; Low priority = technical scanners and stock tips.</p>')
     if failed:
         foot += f'<p class="note"><b>Did not load:</b> {esc("; ".join(failed))}</p>'
     if debug:
         foot += '<!-- ' + esc(debug).replace('--', '- -') + ' -->'
 
-    body = front_html + markets + deals + companies + policy + study + low_html
+    body = front_html + markets + deals + companies + concall + private + logic + policy + study + low_html
     words = len(re.sub(r'<[^>]+>', ' ', body).split())
     minutes = max(1, round(words / 230))
 
@@ -764,7 +956,7 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
         f'<span id="upd">updated {now.strftime("%H:%M")} IST</span></span>'
         '</div><h1>The Morning Brief</h1><div class="sub">Markets · Deals · Companies · Policy</div></header>')
     nav = ('<nav><a href="#front">Front page</a><a href="#markets">Markets</a><a href="#deals">Deals</a>'
-           '<a href="#companies">Companies</a><a href="#policy">Policy &amp; world</a><a href="#study">Study</a></nav>')
+           '<a href="#companies">Companies</a><a href="#concall">Concalls</a><a href="#private">Private markets</a><a href="#logic">Finance logic</a><a href="#policy">Policy &amp; world</a><a href="#study">Study</a></nav>')
     saved = ('<details id="saved"><summary>Saved for later (<span id="savedn">0</span>)</summary><ul id="savedlist"></ul>'
              '<p class="note">Saved on this device only.</p></details>')
 
@@ -775,7 +967,7 @@ def build_page(stories, plan, tables, extras, failed, notes, now, debug=''):
         '<meta name="robots" content="noindex,nofollow">'
         '<meta name="theme-color" content="#161513"><title>The Morning Brief</title>'
         f'<style>{CSS}</style></head><body data-built="{now.isoformat()}"><div class="wrap">'
-        + masthead + ticker_html(tables) + nav + saved + body + foot
+        + masthead + ticker_html(tables) + data_quality_html(tables, plan, extras, extras.get('feeds_failed', len(failed))) + nav + saved + body + foot
         + '</div><div id="newed" onclick="location.reload()">New edition available. Tap to load.</div>'
         f'<script>{script}</script></body></html>'
     )

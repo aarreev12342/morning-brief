@@ -27,7 +27,7 @@ MAX_PER_RADAR_CATEGORY = 6
 MAX_PER_DESK = 5
 DESK_CAPS = {'Market Pulse & Global Cues': 4}   # per-desk override of MAX_PER_DESK
 # Stock-news desks are decided by the headline only (summaries often mention 'upgrades' etc. in passing).
-SUMMARY_PASS_SKIP = {'Companies & Earnings', 'Broker Calls & Stock Movers', 'Corporate Actions',
+SUMMARY_PASS_SKIP = {'Finance Logic & Market Structure', 'Companies & Earnings', 'Companies & Strategy', 'Broker Calls & Stock Movers', 'Corporate Actions',
                      'Trading Ideas (low priority)'}
 AI_MAX_STORIES = 4         # how many top stories get Gemini-written concepts
 GEMINI_MODEL = 'gemini-3.8-flash'   # change here if Google renames the model
@@ -102,7 +102,9 @@ NON_FINANCE_WORDS = [
 ]
 
 # Dropped completely when the HEADLINE contains one of these (lifestyle / retail-content noise).
-DROP_HEADLINE_WORDS = ["here's how", 'banks open or closed', 'bank holiday', 'wedding']
+DROP_HEADLINE_WORDS = ["here's how", 'banks open or closed', 'bank holiday', 'wedding',
+                       'buys property', 'buys apartment', 'buys flat', 'buys bungalow', 'buys villa', 'buys house',
+                       'buys penthouse', 'property purchase', 'purchases property', 'buys luxury']
 
 # ---------- Desk rules (core list) ----------
 # Checked top to bottom, first match wins. Each entry: (desk, radar_category, words)
@@ -110,6 +112,18 @@ DROP_HEADLINE_WORDS = ["here's how", 'banks open or closed', 'bank holiday', 'we
 # Headlines are checked first (more reliable); only if nothing matches does it look at the
 # longer summary text (and the Earnings desk is skipped in that second pass).
 DESK_RULES = [
+    ('Finance Logic & Market Structure', None, ['market structure', 'securities law', 'insider trading', 'short seller',
+        'short-seller', 'spac', 'tokenised', 'tokenized', 'clearing corporation', 'settlement cycle', 'circuit breaker',
+        'index inclusion', 'margin rules', 'sec charges', 'sec sues'], True),
+    # Headline-only placement fixes (checked before everything else).
+    ('Central Banks & Policy', None, ['money market operations', 'money-market operations', 'reserve money',
+        'liquidity adjustment', 'standing deposit facility', 'treasury bills auction', 'auction results'], True),
+    ('M&A & Investment Banking', 'M&A / Control Deals', ['cci approves', 'cci approval', 'cci nod', 'cci clears',
+        'competition commission'], True),
+    ('M&A & Investment Banking', 'PE & Growth Equity', ['to invest up to', 'invest up to', 'strategic investment',
+        'to invest $', 'to invest rs', 'to invest ₹'], True),
+    ('Companies & Strategy', None, ['naming rights', 'cabin revamp', 'cabin', 'revamp', 'lifestyle', 'sponsorship',
+        'brand ambassador', 'scandal', 'jensen huang'], True),
     # Headline-only rules (4th item True): roundups, live blogs and technical-trading noise.
     ('Trading Ideas (low priority)', None, [
         'marubozu', 'rsi trending', 'rsi upswing', 'stockedge', 'technical outlook', 'trade strategy',
@@ -167,7 +181,7 @@ DESK_RULES = [
         'unemployment', 'fiscal deficit', 'trade deficit', 'gst collections', 'union budget']),
     ('Central Banks & Policy', None, [
         'rbi', 'repo rate', 'monetary policy', 'fed', 'federal reserve', 'ecb',
-        'interest rate', 'interest rates', 'rate cut', 'rate cuts', 'rate hike', 'rate hikes', 'liquidity', 'sebi', 'cci',
+        'interest rate', 'interest rates', 'rate cut', 'rate cuts', 'rate hike', 'rate hikes', 'liquidity', 'sebi',
         'regulatory', 'regulation', 'yield', 'yields', 'g-sec', '10-year']),
 ]
 DEFAULT_DESK = 'Market Pulse & Global Cues'
@@ -187,7 +201,9 @@ DESK_ORDER = [
     'M&A & Investment Banking',
     'IPOs & Block Deals',
     'Private Credit & Distressed Debt',
+    'Finance Logic & Market Structure',
     'Companies & Earnings',
+    'Companies & Strategy',
     'Broker Calls & Stock Movers',
     'Corporate Actions',
     'Central Banks & Policy',
@@ -229,18 +245,31 @@ WHY_RULES = [
     (['rbi', 'repo', 'inflation', 'gdp', 'fed'], 'Affects interest rates, liquidity, borrowing costs, equity valuations and deal activity.'),
     (['results', 'earnings', 'profit', 'loss'], 'Helps assess business performance, margins, guidance and investment relevance.'),
 ]
+WHY_RULE_DESKS = {'IPOs & Block Deals'}   # keyword rules above apply only on these desks; other desks use the desk template
+# Narrow special cases checked before the desk template: (headline words, line).
+WHY_SPECIAL = [
+    (['cci approves', 'cci approval', 'cci nod', 'cci clears', 'approval', 'approves', 'approved'],
+     'Regulatory approval: check the parties, the stake, whether conditions were attached, and the timeline to completion.'),
+    (['layoffs', 'layoff', 'job cuts', 'retrenchment'],
+     'Layoffs signal cost pressure or a strategy shift: compare the scale with total headcount and ask whether it reflects weaker demand or an efficiency push.'),
+    (['naming rights', 'sponsorship', 'brand ambassador'],
+     'Marketing deals are a cash outflow for a brand: judge the cost against the reach gained and how it fits the company\'s growth plans.'),
+    (['to invest up to', 'invest up to', 'strategic investment'],
+     'Strategic investments show where capital is flowing: look at who is funding whom, what the money buys (capacity, equity, supply) and how dependent each side becomes.'),
+]
 WHY_DEFAULT = ''   # no generic filler: if nothing specific applies, the line is simply not shown
 # Used when no keyword rule above matches: one question-led line per desk.
 WHY_BY_DESK = {
     'IPOs & Block Deals': 'Check what is being sold (a fresh issue gives the company new money, an offer for sale does not), what the proceeds are used for, valuation versus listed peers, and listing risk.',
+    'Companies & Strategy': 'A company decision that matters only if it changes revenue, costs or competitive position: ask how big it is relative to the business.',
     'PE Fundraising & Dry Powder': 'Shows how much capital is available to deploy and which investors are backing fund managers.',
     'LBO, Growth & Secondary Buyouts': 'Look at the stake bought, the price paid, who is selling and how the deal is financed.',
-    'M&A & Investment Banking': 'Look at buyer, target, price paid, strategic fit and how the deal is funded.',
-    'Private Credit & Distressed Debt': 'Shows lending conditions outside banks and how stressed borrowers are being handled.',
+    'M&A & Investment Banking': 'Look at buyer, target, consideration, strategic logic, synergies, financing and integration risk.',
+    'Private Credit & Distressed Debt': 'Shows lending conditions outside banks and how stressed borrowers are being handled: check the borrower, the lender, pricing and security.',
     'Companies & Earnings': 'Look beyond profit: revenue growth, margin direction, cash flow and management guidance.',
     'Broker Calls & Stock Movers': 'Broker views move stocks in the short run; compare the target price with valuation and the reason given.',
     'Corporate Actions': 'Buybacks and dividends return cash to shareholders; check the size relative to market value and why now.',
-    'Central Banks & Policy': 'What changed, which sectors gain or lose, and how it feeds into rates, currency and valuations.',
+    'Central Banks & Policy': 'Identify the policy lever, the liquidity impact, which institutions are affected, and how it transmits to markets and rates.',
     'Macro Indicators': 'Follow the chain: data, then rate expectations, then yields and currency, then equity valuations.',
 }
 
@@ -361,13 +390,15 @@ WATCHLIST_ALERT_WORDS = {
 SOURCE_TIERS = {
     'RBI press releases': 'Primary', 'SEBI releases': 'Primary',
     'Inc42': 'Startup press',
+    'Money Stuff': 'Market structure',
 }
+DEFAULT_TIER = 'News'
 
 # A "Top deal" headline must contain one of these (a real transaction, not commentary).
 TRANSACTION_WORDS = [
     'acquire', 'acquires', 'acquired', 'acquisition', 'merger', 'merges', 'buyout', 'takeover', 'open offer',
     'stake', 'stakes', 'raises', 'raised', 'funding', 'ipo', 'drhp', 'qip', 'rights issue', 'block deal',
-    'block deals', 'bulk deal', 'bulk deals', 'offload', 'offloads', 'sells', 'buys', 'invests',
+    'block deals', 'bulk deal', 'bulk deals', 'offload', 'offloads', 'sells', 'buys', 'invests', 'to invest', 'invest up to',
     'files draft papers', 'bond sale', 'demerger', 'divest', 'divestment', 'to buy', 'to sell']
 
 # Headlines about investor flows (shown together under Markets).
@@ -411,6 +442,7 @@ PRIMARY_LINKS = [
 
 # Research-question templates used when Gemini is unavailable. {h} is the story headline.
 RESEARCH_BY_DESK = {
+    'Companies & Strategy': 'In "{h}": is this large enough to change revenue or costs, or is it mainly branding?',
     'IPOs & Block Deals': 'In "{h}": what is being sold (fresh issue or offer for sale), what will the money be used for, and how is it priced against listed peers?',
     'LBO, Growth & Secondary Buyouts': 'In "{h}": who is buying and selling, at what price, and what does it say about how investors value the company?',
     'M&A & Investment Banking': 'In "{h}": what is the buyer paying, how is it funded, and what is the strategic logic?',
@@ -432,3 +464,43 @@ DEAL_LOG_SHOW = 25
 AI_RETRIES = 2               # extra tries (with a short pause) when Gemini answers 503/429/timeout
 AI_CACHE_TTL_HOURS = 24      # a good AI answer is reused for this long
 EARNINGS_CARDS = 3           # results stories that get the full earnings card (article text is read)
+
+
+# ---------- Fix pass 2 settings ----------
+YIELD_NAMES = {'US 10Y yield (%)'}          # shown as a change in basis points, not a percent change
+PROMO_WORDS = ['joins ranks', 'mega ipo', "world's biggest", "world's largest", 'blockbuster', 'historic', 'massive']
+WRAP_WORDS = ['futures', 'wall street', 'stocks to watch', 'live updates', 'opening bell']
+EVENT_WORDS = {'ipo', 'listing', 'valuation', 'stake', 'acquisition', 'acquire', 'acquires', 'merger', 'buyout',
+               'layoffs', 'roadshow', 'drhp', 'approval', 'funding', 'raises', 'invest', 'investment'}
+
+
+# ---------- Learning layer: Money Stuff, private-markets intelligence, concall watch ----------
+# Bloomberg Opinion author feed for Matt Levine (UNVERIFIED address; if it fails it is listed under "Did not load").
+MONEY_STUFF = {
+    'name': 'Money Stuff',
+    'url': 'https://www.bloomberg.com/opinion/authors/ARbTQlRLRjE/matthew-s-levine.rss',
+    'page': 'https://www.bloomberg.com/opinion/authors/ARbTQlRLRjE/matthew-s-levine',
+}
+MONEY_STUFF_BOOST = ['deal', 'deals', 'market', 'markets', 'regulation', 'sec', 'ai', 'ipo', 'private credit', 'merger',
+                     'takeover', 'securities', 'stock', 'stocks', 'bond', 'bonds', 'crypto', 'private equity']
+CONCALL_LINKS_PATH = 'data/concall_links.csv'      # you fill this in by hand
+CONCALL_FIELDS = ['company', 'quarter', 'results_date', 'earnings_release_url', 'presentation_url',
+                  'transcript_url', 'investor_relations_url', 'guidance', 'capex', 'key_risks']
+CONCALL_GENERIC_LINKS = [('BSE announcements', 'https://www.bseindia.com/corporates/ann.html'),
+                         ('NSE announcements', 'https://www.nseindia.com/companies-listing/corporate-filings-announcements')]
+PITCHBOOK_PATH = 'data/pitchbook_style_deals.csv'
+PITCHBOOK_FIELDS = ['date', 'company', 'investor', 'deal_type', 'sector', 'geography', 'deal_value', 'stake',
+                    'valuation', 'stage', 'use_of_proceeds', 'strategic_rationale', 'exit_route', 'source_url']
+SECTOR_KEYWORDS = [
+    ('NBFC / financial services', ['nbfc', 'finance', 'bank', 'banks', 'insurance', 'lender', 'lending', 'fintech', 'amc']),
+    ('Technology / AI', ['ai', 'software', 'tech', 'semiconductor', 'chip', 'chips', 'saas', 'cloud', 'data centre', 'data center']),
+    ('Healthcare / pharma', ['pharma', 'hospital', 'hospitals', 'healthcare', 'drug', 'biotech', 'diagnostics']),
+    ('Real estate', ['real estate', 'developers', 'realty', 'estates', 'housing']),
+    ('Energy / power', ['oil', 'gas', 'power', 'solar', 'renewable', 'energy', 'coal']),
+    ('Consumer / retail', ['retail', 'consumer', 'fmcg', 'restaurant', 'jewellery', 'ecommerce', 'e-commerce', 'foods']),
+    ('Industrials / infra', ['steel', 'cement', 'infra', 'infrastructure', 'logistics', 'airport', 'port', 'railway', 'defence']),
+    ('Telecom / media', ['telecom', 'media', 'broadcast', 'streaming']),
+]
+EXIT_WORDS = ['exit', 'exits', 'exited', 'sells stake', 'offloads', 'offload', 'divests', 'divest', 'stake sale', 'sells']
+IPO_BOUND_WORDS = ['drhp', 'sebi nod', 'sebi approval', 'sebi approves', 'gets sebi', 'files for ipo', 'files ipo',
+                   'plans ipo', 'ipo-bound', 'to launch ipo', 'ipo plans', 'ipo roadshow', 'circulated']

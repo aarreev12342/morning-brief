@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 
 import config as C
 import deals
+import learn
 from util import IST, clean_text, full_text, has, run_with_timeout
 
 try:                      # market prices; the page still builds without it
@@ -93,10 +94,29 @@ def fetch_all_articles(failed):
     return articles
 
 
+def fetch_money_stuff(failed):
+    """The single newest Money Stuff column (daily limit 1), kept apart from the news stories."""
+    cfg = C.MONEY_STUFF
+    _, items, err = fetch_feed((cfg['name'], cfg['url']))
+    if err:
+        failed.append(err)
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=C.MAX_AGE_HOURS)
+    items = [a for a in items if not a['published'] or a['published'] >= cutoff]
+    if not items:
+        return None
+    a = max(items, key=lambda x: x['published'] or datetime.min.replace(tzinfo=timezone.utc))
+    a['importance'] = 5 if has(full_text(a), C.MONEY_STUFF_BOOST) else 4
+    a['desk'] = 'Finance Logic & Market Structure'
+    return a
+
+
 # ---------------------------------------------------------------- classification
 def classify(a):
     """Returns (desk, deal_category, how) where how is 'head', 'summary' or 'default'."""
     head, full = a['headline'].lower(), full_text(a)
+    if a['source'] == 'RBI press releases':      # a regulator release is policy news whatever its wording
+        return 'Central Banks & Policy', None, 'head'
     for rule in C.DESK_RULES:                       # pass 1: headline only
         desk, deal_cat, words = rule[:3]
         if has(head, words):
@@ -132,7 +152,12 @@ def deal_stage(a):
 
 def why_it_matters(a):
     text = full_text(a)
-    for words, line in C.WHY_RULES:
+    head = a['headline'].lower()
+    for words, line in C.WHY_SPECIAL:
+        if has(head, words) and a['desk'] != 'IPOs & Block Deals':
+            return line
+    rules = C.WHY_RULES if a['desk'] in C.WHY_RULE_DESKS else []
+    for words, line in rules:
         if has(text, words):
             return line
     return C.WHY_BY_DESK.get(a['desk'], C.WHY_DEFAULT)
@@ -181,7 +206,8 @@ def same_story(a, b):
     wa, wb = title_words(a['headline']), title_words(b['headline'])
     overlap = len(wa & wb) / max(len(wa | wb), 1)
     shared = len(entities(a) & entities(b))
-    return overlap >= 0.4 or shared >= 2 or (shared == 1 and overlap >= 0.2)
+    event = bool(wa & wb & C.EVENT_WORDS)         # same subject + same kind of event, e.g. Anthropic + IPO
+    return overlap >= 0.4 or shared >= 2 or (shared == 1 and overlap >= 0.2) or (shared >= 1 and event and overlap >= 0.08)
 
 
 def cluster(articles):
@@ -195,7 +221,11 @@ def cluster(articles):
             groups.append([a])
     stories = []
     for g in groups:
-        primary = max(g, key=lambda x: (x['importance'], x['published'] or datetime.min.replace(tzinfo=timezone.utc)))
+        def pick(x):
+            h = x['headline'].lower()
+            penalty = (1 if has(h, C.PROMO_WORDS) else 0) + (1 if has(h, C.WRAP_WORDS) else 0)
+            return (x['importance'] - penalty, x['published'] or datetime.min.replace(tzinfo=timezone.utc))
+        primary = max(g, key=pick)
         primary['related'] = [x for x in g if x is not primary]
         stories.append(primary)
     return stories
@@ -266,7 +296,8 @@ def select_front(stories):
     eligible = [s for s in stories
                 if s['how'] == 'head' and not s['desk'].startswith('Trading Ideas')
                 and not has(s['headline'].lower(), NOISE_HEADLINES)]
-    ranked = sorted(eligible, key=lambda s: (prominence(s), s['published'] or FAR_PAST), reverse=True)
+    ranked = sorted(eligible, key=lambda s: (prominence(s) - (1 if has(s['headline'].lower(), C.PROMO_WORDS) else 0),
+                                             s['published'] or FAR_PAST), reverse=True)
     lead = ranked[0] if ranked else None
     secondary = ranked[1:7]
 
@@ -319,6 +350,7 @@ def main():
     failed = []
     log('fetching news feeds')
     articles = [enrich(a) for a in fetch_all_articles(failed)]
+    ms = fetch_money_stuff(failed)
     articles = [a for a in articles
                 if not (a['how'] == 'default' and not has(full_text(a), C.MARKET_WORDS))]
     stories = cluster(articles)
@@ -338,8 +370,18 @@ def main():
     plan = select_front(stories)
     gem = ai.Gemini()
     extras = ai.run(gem, stories, plan, tables, now)
+    extras['ms'] = ms
+    extras['money'] = ai.run_learn(gem, ms, now)
+    extras['concall'] = learn.load_concall(now.date())
+    extras['ai_state'] = gem.state()
+    extras['feeds_failed'] = len(failed)
     log('AI layer done; updating deal log and rendering page')
     extras['deal_log'], added = deals.update(stories, extras, now)
+
+    allrows = deals.load()
+    usdinr = next((r[1] for r in tables.get('Macro', []) if r[0] == 'USD/INR'), None)
+    extras['insights'] = deals.insights(allrows, usdinr)
+    deals.write_pitchbook(allrows)
 
     page = render.build_page(stories, plan, tables, extras, failed, [gem.reader_note()], now, gem.detail())
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -347,8 +389,9 @@ def main():
         f.write(page)
     try:
         import shutil
-        if os.path.exists(C.DEAL_LOG_PATH):
-            shutil.copy(C.DEAL_LOG_PATH, os.path.join(OUT_DIR, 'deals.csv'))
+        for src_path, name in ((C.DEAL_LOG_PATH, 'deals.csv'), (C.PITCHBOOK_PATH, 'pitchbook_style_deals.csv')):
+            if os.path.exists(src_path):
+                shutil.copy(src_path, os.path.join(OUT_DIR, name))
     except Exception:
         pass
     gem.save()
