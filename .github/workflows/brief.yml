@@ -39,7 +39,7 @@ jobs:
         run: |
           git config user.name "morning-brief-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add data/deals.csv || true
+          git add data/deals.csv data/pitchbook_style_deals.csv || true
           git diff --cached --quiet || (git commit -m "Update deal log" && git pull --rebase && git push)
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
